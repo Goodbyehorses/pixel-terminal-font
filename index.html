@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pixel Font Generator</title>
+  <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+  <!-- Header -->
+  <header id="header">
+    <h1>Pixel Font Generator</h1>
+    <div class="header-actions">
+      <button id="btn-undo" disabled title="Undo (Ctrl+Z)">↩ Undo</button>
+      <button id="btn-redo" disabled title="Redo (Ctrl+Shift+Z)">↪ Redo</button>
+      <button id="btn-reset">Reset Char</button>
+      <button id="btn-reset-all">Reset All</button>
+      <button id="btn-export" class="primary">Export SVG</button>
+      <button id="btn-export-all" class="primary">Export All</button>
+      <button id="btn-export-png" class="primary">Export PNG</button>
+      <label class="header-label" title="PNG pixel scale multiplier">×<input id="png-scale" type="number" min="1" max="16" value="4" style="width:36px;padding:2px 4px;"></label>
+      <button id="btn-export-sprite" class="primary">Sprite SVG</button>
+      <button id="btn-theme" title="Toggle light/dark mode">☾</button>
+    </div>
+  </header>
+
+  <!-- Main 3-column area -->
+  <main id="main">
+
+    <!-- Left: character selector -->
+    <nav id="char-list-panel" aria-label="Character selector">
+      <div id="char-list"></div>
+    </nav>
+
+    <!-- Center: grid editor + preview -->
+    <section id="editor-section">
+
+      <!-- Left col: interactive grid -->
+      <div id="editor-col">
+        <div id="editor-label">Edit</div>
+        <div id="grid-editor"></div>
+      </div>
+
+      <!-- Right col: SVG preview -->
+      <div id="preview-col">
+        <div id="preview-label">Preview</div>
+        <div id="editor-preview"></div>
+      </div>
+
+    </section>
+
+    <!-- Right: parameters -->
+    <aside id="params-panel"></aside>
+
+  </main>
+
+  <!-- Type tester -->
+  <section id="type-tester"></section>
+
+  <!-- Bottom: full font preview strip -->
+  <footer id="preview-panel">
+    <div id="preview-header">
+      <span>Font Preview</span>
+    </div>
+    <div id="preview-strip"></div>
+  </footer>
+
+  <script src="js/font-data.js?v=13"></script>
+  <script src="js/renderer.js?v=13"></script>
+  <script src="js/app.js?v=13"></script>
+</body>
+</html>
