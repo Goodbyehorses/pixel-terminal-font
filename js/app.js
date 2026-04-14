@@ -70,9 +70,9 @@ const state = {
     charSpacing:   8,
     cornerMerge:  true,
     cellShape:    'rect',
-    outline:      false,
-    fillGap:       4,
+    outline:       false,
     outlineWidth:  3,
+    outlineColor: '#ffffff',
     skewX:          0,
     innerRadius:    0,
     bridgeRadius:   0,
@@ -563,6 +563,10 @@ const DEFAULT_STYLES = [
     params: { cellWidth: 32, cellHeight: 32, gapX: 8,  gapY: 8,  cornerRadius: 16, innerRadius: 0, bridgeRadius: 0, diagWidth: 10, cellShape: 'circle', cornerMerge: true,  skewX: 0 },
   },
   {
+    name: 'Nodes',
+    params: { cellWidth: 44, cellHeight: 44, gapX: 5,  gapY: 5,  cornerRadius: 22, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'circle', cornerMerge: false, skewX: 0 },
+  },
+  {
     name: 'Chunky',
     params: { cellWidth: 52, cellHeight: 52, gapX: 5,  gapY: 5,  cornerRadius: 14, innerRadius: 0, bridgeRadius: 0, diagWidth: 18, cellShape: 'rect',   cornerMerge: true,  skewX: 0 },
   },
@@ -584,19 +588,19 @@ const DEFAULT_STYLES = [
   },
   {
     name: 'Scanline',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'horizontal', cornerMerge: true, skewX: 0, outline: false, fillGap: 6, outlineWidth: 3 },
+    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'horizontal', cornerMerge: true, skewX: 0 },
   },
   {
     name: 'Blinds',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'vertical',   cornerMerge: true, skewX: 0, outline: false, fillGap: 6, outlineWidth: 3 },
+    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'vertical',   cornerMerge: true, skewX: 0 },
   },
   {
     name: 'Micro',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'pixel',      cornerMerge: true, skewX: 0, outline: false, fillGap: 6, outlineWidth: 3 },
+    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'pixel',      cornerMerge: true, skewX: 0 },
   },
   {
     name: 'Outlined',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 4, gapY: 4, cornerRadius: 10, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',       cornerMerge: true, skewX: 0, outline: true,  fillGap: 4, outlineWidth: 4 },
+    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 12, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',       cornerMerge: true, skewX: 0, outline: true,  outlineWidth: 3 },
   },
 ];
 
@@ -615,21 +619,20 @@ const PARAM_DEFS = [
   { key: 'bgColor',      label: 'Background',                                 type: 'color',    hint: 'Background fill color (or use transparent)' },
   { key: 'diagFill',    label: 'Diagonal Fill',                                type: 'checkbox', hint: 'Draw diagonal lines between diagonally adjacent cells' },
   { key: 'diagWidth',   label: 'Diag Line Width',  min: 1, max: 80,  step: 1, type: 'range',    hint: 'Stroke width of diagonal connector lines' },
-  { key: 'outline',     label: 'Outline',                                      type: 'checkbox', hint: 'Draw inset outline frame + diagonal on each cell (works with any cell shape)' },
+  { key: 'outline',      label: 'Outline',                                      type: 'checkbox', hint: 'Add a border stroke outside the glyph fill — works on top of any style/shape' },
+  { key: 'outlineWidth', label: 'Outline Width',  min: 1,   max: 20,  step: 1, type: 'range',    hint: 'Outline stroke thickness' },
+  { key: 'outlineColor', label: 'Outline Color',                                type: 'color',    hint: 'Color of the outline stroke' },
   { key: 'charSpacing', label: 'Char Spacing',     min: 0, max: 120, step: 1, type: 'range',    hint: 'Extra horizontal space between characters in the type tester' },
   { key: 'cornerMerge', label: 'Merge Corners',                                type: 'checkbox', hint: 'Flatten corners where adjacent cells meet (smoother connected strokes)' },
   { key: 'skewX',        label: 'Skew',           min: -30, max: 30,  step: 1, type: 'range',    hint: 'Italic slant angle in degrees (pure vector transform, exports correctly)' },
-  { key: 'fillGap',      label: 'Fill Gap',       min: 0,   max: 20,  step: 1, type: 'range',    hint: 'Gap between sub-elements inside each cell (horizontal/vertical/pixel fills)' },
-  { key: 'outlineWidth', label: 'Outline Width',  min: 1,   max: 15,  step: 1, type: 'range',    hint: 'Outline thickness for inflated fill style' },
 ];
 
 const PARAM_GROUPS = [
   { label: 'Grid',     keys: ['cols', 'rows'],                                                   open: true  },
   { label: 'Cell',     keys: ['cellWidth', 'cellHeight'],                                         open: true  },
   { label: 'Gap',      keys: ['gapX', 'gapY'],                                                    open: true  },
-  { label: 'Rounding', keys: ['cornerRadius', 'innerRadius', 'bridgeRadius', 'cornerMerge'],      open: true  },
-  { label: 'Style',    keys: ['diagFill', 'diagWidth', 'outline', 'outlineWidth', 'skewX'],        open: true  },
-  { label: 'Fill',     keys: ['fillGap'],                                                          open: true  },
+  { label: 'Rounding', keys: ['cornerRadius', 'cornerMerge'],                                     open: true  },
+  { label: 'Style',    keys: ['diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX'], open: true  },
   { label: 'Color',    keys: ['fgColor', 'bgColor'],                                              open: true  },
   { label: 'Export',   keys: ['padding', 'charSpacing'],                                          open: false },
 ];
@@ -1417,14 +1420,11 @@ function syncShapeButtons() {
 }
 
 function updateConditionalParams() {
-  const shape = state.params.cellShape || 'rect';
-  const hasFill = shape === 'horizontal' || shape === 'vertical' || shape === 'pixel';
   const hasOutline = !!state.params.outline;
-
-  const fillGapRow    = document.querySelector('.param-row[data-param-key="fillGap"]');
-  const outlineWRow   = document.querySelector('.param-row[data-param-key="outlineWidth"]');
-  if (fillGapRow)  fillGapRow.style.display  = hasFill    ? '' : 'none';
+  const outlineWRow = document.querySelector('.param-row[data-param-key="outlineWidth"]');
+  const outlineCRow = document.querySelector('.param-row[data-param-key="outlineColor"]');
   if (outlineWRow) outlineWRow.style.display = hasOutline ? '' : 'none';
+  if (outlineCRow) outlineCRow.style.display = hasOutline ? '' : 'none';
 }
 
 function buildStylesUI() {

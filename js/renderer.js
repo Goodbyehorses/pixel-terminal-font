@@ -77,12 +77,11 @@ function generateGlyphPath(data, cols, rows, params) {
   const br  = Math.min(params.bridgeRadius || 0, gapX > 0 ? gapX / 2 : 0, cellHeight / 2);
   const bvr = Math.min(params.bridgeRadius || 0, gapY > 0 ? gapY / 2 : 0, cellWidth  / 2);
   const p = (n) => Math.round(n * 100) / 100;
-  // Integer bar sizes — floor ensures whole pixels, no sub-pixel drift.
-  const fillGap = Math.max(1, params.fillGap != null ? params.fillGap : 4);
-  const barH = Math.floor((cellHeight - fillGap) / 2);  // for horizontal
-  const barW = Math.floor((cellWidth  - fillGap) / 2);  // for vertical
-  const subW = Math.floor((cellWidth  - fillGap) / 2);  // for pixel
-  const subH = Math.floor((cellHeight - fillGap) / 2);  // for pixel
+  // Intra-cell gap = inter-cell gap on the same axis → continuous even rhythm.
+  const barH = Math.max(1, Math.floor((cellHeight - gapY) / 2));  // for horizontal
+  const barW = Math.max(1, Math.floor((cellWidth  - gapX) / 2));  // for vertical
+  const subW = Math.max(1, Math.floor((cellWidth  - gapX) / 2));  // for pixel
+  const subH = Math.max(1, Math.floor((cellHeight - gapY) / 2));  // for pixel
 
   const isOn = (c, r) =>
     c >= 0 && c < cols && r >= 0 && r < rows && data[r * cols + c] === 1;
@@ -256,74 +255,6 @@ function generateInnerFilletPath(data, cols, rows, params) {
 }
 
 /**
- * Generate outline overlay: inset bgColor border path + bgColor diagonal per cell.
- * Drawn ON TOP of the filled glyph path. Does NOT hollow the cell — the border and
- * diagonal appear as bgColor stripes over the fgColor fill, making cells look bolder/framed.
- * Returns { borderPath, diagSVG }.
- */
-function generateInflatedOverlay(data, cols, rows, params) {
-  if (!params.outline) return { cutoutPath: '', diagSVG: '' };
-
-  const { cellWidth, cellHeight, cornerRadius, cornerMerge = true } = params;
-  const { gapX, gapY } = resolveGaps(params);
-  const ow = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
-  const stepX = cellWidth  + gapX;
-  const stepY = cellHeight + gapY;
-  const rad = Math.min(cornerRadius || 0, cellWidth / 2, cellHeight / 2);
-  const p = (n) => Math.round(n * 100) / 100;
-
-  const isOn = (c, r) =>
-    c >= 0 && c < cols && r >= 0 && r < rows && data[r * cols + c] === 1;
-
-  // Border path: inset rect in bgColor drawn over fill creates a visible frame.
-  // We draw the OUTER rect minus the INNER rect using two path subpaths (even-odd rule
-  // would work, but simpler: just output the inset rect in bgColor directly — it covers
-  // fgColor at the edges, leaving the interior fgColor intact).
-  const borderParts = [];
-  const diagLines = [];
-  const bgColor = params.bgColor && params.bgColor !== 'transparent' ? params.bgColor : '#000000';
-  const diagW = Math.max(1, ow);
-
-  for (let r = 0; r < rows; r++) {
-    for (let c = 0; c < cols; c++) {
-      if (!isOn(c, r)) continue;
-
-      const nN = isOn(c, r - 1);
-      const nS = isOn(c, r + 1);
-      const nW = isOn(c - 1, r);
-      const nE = isOn(c + 1, r);
-
-      const x = c * stepX;
-      const y = r * stepY;
-      const cw = cellWidth;
-      const ch = cellHeight;
-
-      // Inset border: 4 thin bgColor rects along each edge
-      // Top edge
-      borderParts.push(`M ${p(x)} ${p(y)} H ${p(x+cw)} V ${p(y+ow)} H ${p(x)} Z`);
-      // Bottom edge
-      borderParts.push(`M ${p(x)} ${p(y+ch-ow)} H ${p(x+cw)} V ${p(y+ch)} H ${p(x)} Z`);
-      // Left edge (between top/bottom bands)
-      borderParts.push(`M ${p(x)} ${p(y+ow)} H ${p(x+ow)} V ${p(y+ch-ow)} H ${p(x)} Z`);
-      // Right edge (between top/bottom bands)
-      borderParts.push(`M ${p(x+cw-ow)} ${p(y+ow)} H ${p(x+cw)} V ${p(y+ch-ow)} H ${p(x+cw-ow)} Z`);
-
-      // Diagonal line across cell interior (top-left to bottom-right) in bgColor
-      diagLines.push(
-        `<line x1="${p(x + ow)}" y1="${p(y + ow)}" x2="${p(x + cw - ow)}" y2="${p(y + ch - ow)}"/>`
-      );
-    }
-  }
-
-  const cutoutPath = borderParts.join(' ');
-  const diagSVG = diagLines.length > 0
-    ? `<g stroke="${bgColor}" stroke-width="${diagW}" stroke-linecap="butt" fill="none">\n    ${diagLines.join('\n    ')}\n  </g>`
-    : '';
-
-  return { cutoutPath, diagSVG };
-}
-
-/**
  * Generate SVG <line> elements for diagonal cell connections.
  */
 function generateDiagLines(data, cols, rows, params) {
@@ -402,7 +333,12 @@ function generateGlyphSVG(data, cols, rows, params) {
   const pathData    = generateGlyphPath(data, cols, rows, params);
   const filletData  = generateInnerFilletPath(data, cols, rows, params);
   const diagSVG     = generateDiagLines(data, cols, rows, params);
-  const { cutoutPath, diagSVG: outlineDiagSVG } = generateInflatedOverlay(data, cols, rows, params);
+
+  const outline      = !!params.outline;
+  const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
+  const outlineColor = params.outlineColor || fgColor;
+  // Doubled stroke-width + paint-order="stroke fill" → only outer half of stroke shows.
+  const strokeAttrs  = outline ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
 
   const lines = [];
 
@@ -421,9 +357,7 @@ function generateGlyphSVG(data, cols, rows, params) {
   const ind           = useGroup ? '    ' : '  ';
 
   if (useGroup) lines.push(`  <g${transformAttr}>`);
-  lines.push(`${ind}<path d="${pathData}" fill="${fgColor}"/>`);
-  if (cutoutPath) lines.push(`${ind}<path d="${cutoutPath}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
-  if (outlineDiagSVG) lines.push(ind + outlineDiagSVG.trim());
+  lines.push(`${ind}<path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
   if (filletData) lines.push(`${ind}<path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
   if (diagSVG) lines.push(ind + diagSVG.trim());
   if (useGroup) lines.push(`  </g>`);
@@ -451,7 +385,6 @@ function scaleParams(params, targetCellHeight) {
     bridgeRadius: Math.max(0, Math.round((params.bridgeRadius || 0) * scale)),
     diagWidth:    Math.max(1, Math.round((params.diagWidth || 8) * scale)),
     padding:      Math.max(0, Math.round((params.padding || 0) * scale)),
-    fillGap:      Math.max(0, Math.round((params.fillGap != null ? params.fillGap : 4) * scale)),
     outlineWidth: Math.max(1, Math.round((params.outlineWidth != null ? params.outlineWidth : 3) * scale)),
     // skewX is an angle — does not scale
     // cellFill is a string enum — does not scale
@@ -502,12 +435,14 @@ function generateTextSVG(glyphs, text, params) {
     const pathData   = generateGlyphPath(data, cols, rows, params);
     const filletData = generateInnerFilletPath(data, cols, rows, params);
     const diagSVG    = generateDiagLines(data, cols, rows, params);
-    const { cutoutPath, diagSVG: outlineDiagSVG } = generateInflatedOverlay(data, cols, rows, params);
+
+    const outline      = !!params.outline;
+    const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
+    const outlineColor = params.outlineColor || fgColor;
+    const strokeAttrs  = outline ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
 
     lines.push(`  <g transform="${transforms.join(' ')}">`);
-    lines.push(`    <path d="${pathData}" fill="${fgColor}"/>`);
-    if (cutoutPath) lines.push(`    <path d="${cutoutPath}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
-    if (outlineDiagSVG) lines.push('    ' + outlineDiagSVG.trim());
+    lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
     if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
     if (diagSVG) lines.push('    ' + diagSVG.trim());
     lines.push(`  </g>`);
@@ -589,7 +524,12 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
     const pathData   = generateGlyphPath(data, cols, rows, params);
     const filletData = generateInnerFilletPath(data, cols, rows, params);
     const diagSVG    = generateDiagLines(data, cols, rows, params);
-    const { cutoutPath, diagSVG: outlineDiagSVG } = generateInflatedOverlay(data, cols, rows, params);
+
+    const outline      = !!params.outline;
+    const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
+    const outlineColor = params.outlineColor || fgColor;
+    const strokeAttrs  = outline ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
+
     const gx = (i % perRow) * stepX;
     const gy = Math.floor(i / perRow) * stepY;
     const skewX = params.skewX || 0;
@@ -599,9 +539,7 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
     const transforms = [`translate(${gx + skewShift},${gy})`];
     if (skewX !== 0) transforms.push(`skewX(${skewX})`);
     lines.push(`  <g id="glyph-${ch.codePointAt(0)}" transform="${transforms.join(' ')}">`);
-    lines.push(`    <path d="${pathData}" fill="${fgColor}"/>`);
-    if (cutoutPath) lines.push(`    <path d="${cutoutPath}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
-    if (outlineDiagSVG) lines.push('    ' + outlineDiagSVG.trim());
+    lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
     if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
     if (diagSVG) lines.push('    ' + diagSVG.trim());
     lines.push(`  </g>`);
