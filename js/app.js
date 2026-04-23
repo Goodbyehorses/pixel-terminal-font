@@ -76,6 +76,7 @@ const state = {
     skewX:          0,
     innerRadius:    0,
     bridgeRadius:   0,
+    lockNodeRadius: true,
   },
   glyphs: {},
 };
@@ -564,7 +565,7 @@ const DEFAULT_STYLES = [
   },
   {
     name: 'Nodes',
-    params: { cellWidth: 44, cellHeight: 44, gapX: 5,  gapY: 5,  cornerRadius: 22, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'circle', cornerMerge: false, skewX: 0 },
+    params: { cellWidth: 44, cellHeight: 44, gapX: 0, gapY: 0, cornerRadius: 22, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'nodes', cornerMerge: false, skewX: 0, lockNodeRadius: true },
   },
   {
     name: 'Chunky',
@@ -623,7 +624,8 @@ const PARAM_DEFS = [
   { key: 'outlineWidth', label: 'Outline Width',  min: 1,   max: 20,  step: 1, type: 'range',    hint: 'Outline stroke thickness' },
   { key: 'outlineColor', label: 'Outline Color',                                type: 'color',    hint: 'Color of the outline stroke' },
   { key: 'charSpacing', label: 'Char Spacing',     min: 0, max: 120, step: 1, type: 'range',    hint: 'Extra horizontal space between characters in the type tester' },
-  { key: 'cornerMerge', label: 'Merge Corners',                                type: 'checkbox', hint: 'Flatten corners where adjacent cells meet (smoother connected strokes)' },
+  { key: 'cornerMerge',    label: 'Merge Corners',    type: 'checkbox', hint: 'Flatten corners where adjacent cells meet (smoother connected strokes)' },
+  { key: 'lockNodeRadius', label: 'Lock Node Radius', type: 'checkbox', hint: 'Lock circular node to half the smallest cell side (matches prototype). Only applies to Nodes shape.' },
   { key: 'skewX',        label: 'Skew',           min: -30, max: 30,  step: 1, type: 'range',    hint: 'Italic slant angle in degrees (pure vector transform, exports correctly)' },
 ];
 
@@ -631,7 +633,7 @@ const PARAM_GROUPS = [
   { label: 'Grid',     keys: ['cols', 'rows'],                                                   open: true  },
   { label: 'Cell',     keys: ['cellWidth', 'cellHeight'],                                         open: true  },
   { label: 'Gap',      keys: ['gapX', 'gapY'],                                                    open: true  },
-  { label: 'Rounding', keys: ['cornerRadius', 'cornerMerge'],                                     open: true  },
+  { label: 'Rounding', keys: ['cornerRadius', 'cornerMerge', 'lockNodeRadius'],                    open: true  },
   { label: 'Style',    keys: ['diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX'], open: true  },
   { label: 'Color',    keys: ['fgColor', 'bgColor'],                                              open: true  },
   { label: 'Export',   keys: ['padding', 'charSpacing'],                                          open: false },
@@ -704,7 +706,7 @@ function buildParamControls() {
   const shapeGrid = document.createElement('div');
   shapeGrid.className = 'presets-grid char-style-grid';
 
-  for (const [shape, label] of [['rect','Rect'],['circle','Circle'],['horizontal','Horizontal'],['vertical','Vertical'],['pixel','Pixel']]) {
+  for (const [shape, label] of [['rect','Rect'],['circle','Circle'],['nodes','Nodes'],['horizontal','Horizontal'],['vertical','Vertical'],['pixel','Pixel']]) {
     const btn = document.createElement('button');
     btn.className = 'preset-btn cell-shape-btn';
     btn.dataset.shape = shape;
@@ -936,6 +938,13 @@ function applyCellShape(shape) {
   document.querySelectorAll('.cell-shape-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.shape === shape);
   });
+  if (shape === 'nodes') {
+    // Force square cells and no gap
+    state.params.gapX = 0;
+    state.params.gapY = 0;
+    state.params.cellHeight = state.params.cellWidth;
+    syncParamControls();
+  }
   updateConditionalParams();
   renderEditorPreview();
   renderPreviewStrip();
@@ -945,6 +954,7 @@ function applyCellShape(shape) {
 
 function applyPreset(preset) {
   Object.assign(state.params, preset.params);
+  if (preset.params.lockNodeRadius === undefined) state.params.lockNodeRadius = true;
   // Clamp cornerRadius to cell size
   const maxRad = Math.floor(Math.min(state.params.cellWidth, state.params.cellHeight) / 2);
   state.params.cornerRadius = Math.min(state.params.cornerRadius, maxRad);
@@ -964,6 +974,31 @@ function applyParam(key, value) {
   if (key === 'cols' || key === 'rows') {
     resizeAllGlyphs(oldCols, oldRows, state.params.cols, state.params.rows);
     buildGridEditor();
+  }
+
+  // Nodes: enforce square cells and zero gap
+  if (state.params.cellShape === 'nodes') {
+    if (key === 'cellWidth' || key === 'cellHeight') {
+      state.params.cellWidth = value;
+      state.params.cellHeight = value;
+      const wSlider = document.getElementById('param-cellWidth');
+      const hSlider = document.getElementById('param-cellHeight');
+      const wNum = document.querySelector('.param-num[data-key="cellWidth"]');
+      const hNum = document.querySelector('.param-num[data-key="cellHeight"]');
+      const wBadge = document.getElementById('param-val-cellWidth');
+      const hBadge = document.getElementById('param-val-cellHeight');
+      if (wSlider) wSlider.value = value;
+      if (hSlider) hSlider.value = value;
+      if (wNum) wNum.value = value;
+      if (hNum) hNum.value = value;
+      if (wBadge) wBadge.textContent = value;
+      if (hBadge) hBadge.textContent = value;
+    }
+    if (key === 'gapX' || key === 'gapY') {
+      state.params.gapX = 0;
+      state.params.gapY = 0;
+      return;
+    }
   }
 
   // Clamp cornerRadius to fit within both cell dimensions
@@ -1421,10 +1456,21 @@ function syncShapeButtons() {
 
 function updateConditionalParams() {
   const hasOutline = !!state.params.outline;
+  const isNodes = state.params.cellShape === 'nodes';
+
   const outlineWRow = document.querySelector('.param-row[data-param-key="outlineWidth"]');
   const outlineCRow = document.querySelector('.param-row[data-param-key="outlineColor"]');
   if (outlineWRow) outlineWRow.style.display = hasOutline ? '' : 'none';
   if (outlineCRow) outlineCRow.style.display = hasOutline ? '' : 'none';
+
+  // Nodes: hide gap controls (locked at 0) and square-cell note
+  for (const key of ['gapX', 'gapY', 'cornerMerge']) {
+    const row = document.querySelector(`.param-row[data-param-key="${key}"]`);
+    if (row) row.style.display = isNodes ? 'none' : '';
+  }
+  // lockNodeRadius only relevant for nodes
+  const lockRow = document.querySelector('.param-row[data-param-key="lockNodeRadius"]');
+  if (lockRow) lockRow.style.display = isNodes ? '' : 'none';
 }
 
 function buildStylesUI() {

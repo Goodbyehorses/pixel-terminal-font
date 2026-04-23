@@ -55,6 +55,103 @@ function skewExtraWidth(skewX, contentH) {
 
 
 /**
+ * Resolve the effective node radius from params (respects lockNodeRadius).
+ */
+function resolveNodeR(params) {
+  if (params._nodeR != null) return params._nodeR;
+  const maxR = Math.min(params.cellWidth, params.cellHeight) / 2;
+  return (params.lockNodeRadius !== false)
+    ? maxR
+    : Math.max(0, Math.min(params.cornerRadius || 0, maxR));
+}
+
+/**
+ * Generate outline halo for Nodes style: same geometry as positive layer but with
+ * nodeR enlarged by outlineWidth. Rendered in outlineColor beneath the main shape.
+ */
+function generateNodesHalo(data, cols, rows, params) {
+  const outlineW = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
+  const nodeR = resolveNodeR(params);
+  const haloParams = { ...params, _nodeR: nodeR + outlineW };
+  return generateNodesGeometry(data, cols, rows, haloParams);
+}
+
+/**
+ * Nodes style: circles at each ON pixel centre, orthogonal bridge rects between
+ * adjacent ON pixels, concave corner fillets at count=3 L/T junctions, diagonal
+ * bridges at count=2 diagonal configurations. Positive + cutter shapes coexist in
+ * one path — rendered with so cutters carve the concave notches.
+ * Ported from circle-join-prototype/index.html build v3.
+ */
+function generateNodesGeometry(data, cols, rows, params) {
+  const { cellWidth, cellHeight } = params;
+  const { gapX, gapY } = resolveGaps(params);
+  const nodeR = resolveNodeR(params);
+
+  const stepX = cellWidth + gapX;
+  const stepY = cellHeight + gapY;
+  const p = (n) => Math.round(n * 100) / 100;
+
+  const isOn = (c, r) =>
+    c >= 0 && c < cols && r >= 0 && r < rows && data[r * cols + c] === 1;
+
+  const cx = (c) => c * stepX + cellWidth / 2;
+  const cy = (r) => r * stepY + cellHeight / 2;
+
+  const parts = [];
+  const rectPath = (x, y, w, h) =>
+    `M ${p(x)} ${p(y)} H ${p(x + w)} V ${p(y + h)} H ${p(x)} Z`;
+  const circlePath = (x, y) => ellipseSubpath(x, y, nodeR, nodeR);
+
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      if (!isOn(c, r)) continue;
+      parts.push(circlePath(cx(c), cy(r)));
+      if (isOn(c + 1, r)) {
+        parts.push(rectPath(cx(c), cy(r) - nodeR, cx(c + 1) - cx(c), 2 * nodeR));
+      }
+      if (isOn(c, r + 1)) {
+        parts.push(rectPath(cx(c) - nodeR, cy(r), 2 * nodeR, cy(r + 1) - cy(r)));
+      }
+    }
+  }
+
+  // Vertex pass: corner fill-patches (count=3) and diagonal bridge rects (count=2).
+  // Cutter circles are returned separately by generateInnerFilletPath (nodes branch)
+  // and drawn in bgColor on top, same pipeline as inner fillets.
+  for (let r = 0; r < rows - 1; r++) {
+    for (let c = 0; c < cols - 1; c++) {
+      const ul = isOn(c,     r)     ? 1 : 0;
+      const ur = isOn(c + 1, r)     ? 1 : 0;
+      const ll = isOn(c,     r + 1) ? 1 : 0;
+      const lr = isOn(c + 1, r + 1) ? 1 : 0;
+      const count = ul + ur + ll + lr;
+
+      const xL = cx(c), xR = cx(c + 1);
+      const yT = cy(r), yB = cy(r + 1);
+      const vx = (xL + xR) / 2;
+      const vy = (yT + yB) / 2;
+
+      if (count === 3) {
+        let px, py;
+        if (!ul)      { px = vx - nodeR; py = vy - nodeR; }
+        else if (!ur) { px = vx;         py = vy - nodeR; }
+        else if (!ll) { px = vx - nodeR; py = vy;         }
+        else          { px = vx;         py = vy;         }
+        parts.push(rectPath(px, py, nodeR, nodeR));
+      } else if (count === 2) {
+        const nwse = ul && lr && !ur && !ll;
+        const nesw = ur && ll && !ul && !lr;
+        if (!nwse && !nesw) continue;
+        parts.push(rectPath(vx - nodeR, vy - nodeR, 2 * nodeR, 2 * nodeR));
+      }
+    }
+  }
+
+  return parts.join(' ');
+}
+
+/**
  * Generate the combined SVG path data for a glyph (cells + orthogonal bridges).
  *
  * @param {Array<number>} data  Flat glyph array (row-major, 0 or 1)
@@ -64,6 +161,9 @@ function skewExtraWidth(skewX, contentH) {
  * @returns {string}       SVG path data (d attribute value)
  */
 function generateGlyphPath(data, cols, rows, params) {
+  if (params.cellShape === 'nodes') {
+    return generateNodesGeometry(data, cols, rows, params);
+  }
   const {
     cellWidth, cellHeight, cornerRadius,
     cornerMerge = true,
@@ -187,6 +287,51 @@ function generateInnerFilletPath(data, cols, rows, params) {
   const { cellWidth, cellHeight, cornerRadius, cornerMerge = true, cellShape = 'rect' } = params;
   const { gapX, gapY } = resolveGaps(params);
   const ir = params.innerRadius || 0;
+  if (cellShape === 'nodes') {
+    // Cutter circles drawn in bgColor on top of positive shapes — carve concave fillets.
+    const { gapX: gx, gapY: gy } = resolveGaps(params);
+    const lock2 = params.lockNodeRadius !== false;
+    const maxR2 = Math.min(cellWidth, cellHeight) / 2;
+    const nodeR2 = lock2 ? maxR2 : Math.max(0, Math.min(params.cornerRadius || 0, maxR2));
+    const stepX2 = cellWidth + gx;
+    const stepY2 = cellHeight + gy;
+    const cx2 = (c) => c * stepX2 + cellWidth / 2;
+    const cy2 = (r) => r * stepY2 + cellHeight / 2;
+    const isOn2 = (c, r) =>
+      c >= 0 && c < cols && r >= 0 && r < rows && data[r * cols + c] === 1;
+    const cutters = [];
+    for (let r = 0; r < rows - 1; r++) {
+      for (let c = 0; c < cols - 1; c++) {
+        const ul = isOn2(c,     r)     ? 1 : 0;
+        const ur = isOn2(c + 1, r)     ? 1 : 0;
+        const ll = isOn2(c,     r + 1) ? 1 : 0;
+        const lr = isOn2(c + 1, r + 1) ? 1 : 0;
+        const count = ul + ur + ll + lr;
+        const xL = cx2(c), xR = cx2(c + 1);
+        const yT = cy2(r), yB = cy2(r + 1);
+        if (count === 3) {
+          let ecx, ecy;
+          if (!ul)      { ecx = xL; ecy = yT; }
+          else if (!ur) { ecx = xR; ecy = yT; }
+          else if (!ll) { ecx = xL; ecy = yB; }
+          else          { ecx = xR; ecy = yB; }
+          cutters.push(ellipseSubpath(ecx, ecy, nodeR2, nodeR2));
+        } else if (count === 2) {
+          const nwse = ul && lr && !ur && !ll;
+          const nesw = ur && ll && !ul && !lr;
+          if (!nwse && !nesw) continue;
+          if (nwse) {
+            cutters.push(ellipseSubpath(xR, yT, nodeR2, nodeR2));
+            cutters.push(ellipseSubpath(xL, yB, nodeR2, nodeR2));
+          } else {
+            cutters.push(ellipseSubpath(xL, yT, nodeR2, nodeR2));
+            cutters.push(ellipseSubpath(xR, yB, nodeR2, nodeR2));
+          }
+        }
+      }
+    }
+    return cutters.join(' ');
+  }
   if (ir <= 0 || cellShape === 'circle') return '';
 
   const stepX = cellWidth  + gapX;
@@ -260,7 +405,7 @@ function generateInnerFilletPath(data, cols, rows, params) {
 function generateDiagLines(data, cols, rows, params) {
   const { cellWidth, cellHeight, diagFill, diagWidth = 8, fgColor = '#ffffff' } = params;
   const { gapX, gapY } = resolveGaps(params);
-  if (!diagFill || diagWidth <= 0) return '';
+  if (!diagFill || diagWidth <= 0 || params.cellShape === 'nodes') return '';
 
   const stepX = cellWidth + gapX;
   const stepY = cellHeight + gapY;
@@ -337,8 +482,9 @@ function generateGlyphSVG(data, cols, rows, params) {
   const outline      = !!params.outline;
   const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
   const outlineColor = params.outlineColor || fgColor;
-  // Doubled stroke-width + paint-order="stroke fill" → only outer half of stroke shows.
-  const strokeAttrs  = outline ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
+  const isNodes      = params.cellShape === 'nodes';
+  // Nodes use halo-path outline (stroke traces internal subpath edges and looks wrong).
+  const strokeAttrs  = (outline && !isNodes) ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
 
   const lines = [];
 
@@ -357,6 +503,7 @@ function generateGlyphSVG(data, cols, rows, params) {
   const ind           = useGroup ? '    ' : '  ';
 
   if (useGroup) lines.push(`  <g${transformAttr}>`);
+  if (isNodes && outline) lines.push(`${ind}<path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
   lines.push(`${ind}<path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
   if (filletData) lines.push(`${ind}<path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
   if (diagSVG) lines.push(ind + diagSVG.trim());
@@ -439,9 +586,11 @@ function generateTextSVG(glyphs, text, params) {
     const outline      = !!params.outline;
     const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
     const outlineColor = params.outlineColor || fgColor;
-    const strokeAttrs  = outline ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
+    const isNodes      = params.cellShape === 'nodes';
+    const strokeAttrs  = (outline && !isNodes) ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
 
     lines.push(`  <g transform="${transforms.join(' ')}">`);
+    if (isNodes && outline) lines.push(`    <path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
     lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
     if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
     if (diagSVG) lines.push('    ' + diagSVG.trim());
@@ -528,7 +677,8 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
     const outline      = !!params.outline;
     const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
     const outlineColor = params.outlineColor || fgColor;
-    const strokeAttrs  = outline ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
+    const isNodes      = params.cellShape === 'nodes';
+    const strokeAttrs  = (outline && !isNodes) ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
 
     const gx = (i % perRow) * stepX;
     const gy = Math.floor(i / perRow) * stepY;
@@ -539,6 +689,7 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
     const transforms = [`translate(${gx + skewShift},${gy})`];
     if (skewX !== 0) transforms.push(`skewX(${skewX})`);
     lines.push(`  <g id="glyph-${ch.codePointAt(0)}" transform="${transforms.join(' ')}">`);
+    if (isNodes && outline) lines.push(`    <path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
     lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
     if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
     if (diagSVG) lines.push('    ' + diagSVG.trim());
