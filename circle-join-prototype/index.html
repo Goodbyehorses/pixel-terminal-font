@@ -1,0 +1,175 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Circle Join — A</title>
+<style>
+  :root { --cell: 64px; --cols: 5; --rows: 5; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    background: #111;
+    color: #bbb;
+    font: 13px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  .stage { display: flex; flex-direction: column; align-items: center; gap: 16px; }
+  .board {
+    position: relative;
+    width: calc(var(--cell) * var(--cols));
+    height: calc(var(--cell) * var(--rows));
+  }
+  .grid {
+    position: absolute; inset: 0;
+    display: grid;
+    grid-template-columns: repeat(var(--cols), 1fr);
+    grid-template-rows: repeat(var(--rows), 1fr);
+  }
+  .cell {
+    border: 1px solid rgba(255,255,255,0.07);
+    cursor: pointer;
+    transition: background 80ms;
+  }
+  .cell:hover { background: rgba(255,255,255,0.05); }
+  svg.glyph {
+    position: absolute; inset: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    shape-rendering: geometricPrecision;
+  }
+  .controls { display: flex; gap: 8px; }
+  button {
+    background: #1a1a1a; color: #ddd;
+    border: 1px solid #2a2a2a;
+    padding: 6px 12px;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover { background: #222; }
+  .hint { opacity: 0.6; }
+</style>
+</head>
+<body>
+  <div class="stage">
+    <div class="board">
+      <div class="grid" id="grid"></div>
+      <svg class="glyph" id="glyph" preserveAspectRatio="none"></svg>
+    </div>
+    <div class="controls">
+      <button id="reset">Reset to A</button>
+      <button id="clear">Clear</button>
+    </div>
+    <div class="hint">click cells to toggle · diagonal bridges + corner fillets</div>
+  </div>
+<script>
+  const COLS = 5, ROWS = 5;
+  const LETTER_A = [
+    [0,1,1,1,0],
+    [1,1,0,1,1],
+    [1,1,1,1,1],
+    [1,0,0,0,1],
+    [1,0,0,0,1],
+  ];
+  let state = LETTER_A.map(r => r.slice());
+
+  const gridEl = document.getElementById('grid');
+  const glyphEl = document.getElementById('glyph');
+  glyphEl.setAttribute('viewBox', `0 0 ${COLS} ${ROWS}`);
+
+  function buildGrid() {
+    gridEl.innerHTML = '';
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        const d = document.createElement('div');
+        d.className = 'cell';
+        d.addEventListener('click', () => {
+          state[y][x] = state[y][x] ? 0 : 1;
+          render();
+        });
+        gridEl.appendChild(d);
+      }
+    }
+  }
+
+  function render() {
+    const positive = [];
+    const cutters = [];
+    const r = 0.5;
+
+    for (let y = 0; y < ROWS; y++) {
+      for (let x = 0; x < COLS; x++) {
+        if (!state[y][x]) continue;
+        positive.push(`<circle cx="${x + 0.5}" cy="${y + 0.5}" r="${r}"/>`);
+        if (x + 1 < COLS && state[y][x + 1]) {
+          positive.push(`<rect x="${x + 0.5}" y="${y}" width="1" height="1"/>`);
+        }
+        if (y + 1 < ROWS && state[y + 1][x]) {
+          positive.push(`<rect x="${x}" y="${y + 0.5}" width="1" height="1"/>`);
+        }
+      }
+    }
+
+    for (let vy = 1; vy < ROWS; vy++) {
+      for (let vx = 1; vx < COLS; vx++) {
+        const ul = state[vy - 1][vx - 1];
+        const ur = state[vy - 1][vx];
+        const ll = state[vy][vx - 1];
+        const lr = state[vy][vx];
+        const count = ul + ur + ll + lr;
+
+        if (count === 3) {
+          // concave corner: fill small corner patch in the empty quadrant, carve the round part out
+          let dx, dy;
+          if (!ul)      { dx = -1; dy = -1; }
+          else if (!ur) { dx =  1; dy = -1; }
+          else if (!ll) { dx = -1; dy =  1; }
+          else          { dx =  1; dy =  1; }
+          const sx = dx === -1 ? vx - r : vx;
+          const sy = dy === -1 ? vy - r : vy;
+          positive.push(`<rect x="${sx}" y="${sy}" width="${r}" height="${r}"/>`);
+          cutters.push(`<circle cx="${vx + dx * r}" cy="${vy + dy * r}" r="${r}"/>`);
+        } else if (count === 2) {
+          // diagonal bridge: fill 1×1 patch on the vertex, carve cutter discs in the 2 empty cells
+          const nwse = ul && lr && !ur && !ll;
+          const nesw = ur && ll && !ul && !lr;
+          if (!nwse && !nesw) continue;
+          positive.push(`<rect x="${vx - r}" y="${vy - r}" width="${2 * r}" height="${2 * r}"/>`);
+          if (nwse) {
+            cutters.push(`<circle cx="${vx + r}" cy="${vy - r}" r="${r}"/>`);
+            cutters.push(`<circle cx="${vx - r}" cy="${vy + r}" r="${r}"/>`);
+          } else {
+            cutters.push(`<circle cx="${vx - r}" cy="${vy - r}" r="${r}"/>`);
+            cutters.push(`<circle cx="${vx + r}" cy="${vy + r}" r="${r}"/>`);
+          }
+        }
+      }
+    }
+
+    glyphEl.innerHTML = `
+      <defs>
+        <mask id="glyphMask" maskUnits="userSpaceOnUse" x="0" y="0" width="${COLS}" height="${ROWS}">
+          <rect width="${COLS}" height="${ROWS}" fill="black"/>
+          <g fill="white">${positive.join('')}</g>
+          <g fill="black">${cutters.join('')}</g>
+        </mask>
+      </defs>
+      <rect width="${COLS}" height="${ROWS}" fill="#ededed" mask="url(#glyphMask)"/>
+    `;
+  }
+
+  document.getElementById('reset').addEventListener('click', () => {
+    state = LETTER_A.map(r => r.slice());
+    render();
+  });
+  document.getElementById('clear').addEventListener('click', () => {
+    state = Array.from({ length: ROWS }, () => Array(COLS).fill(0));
+    render();
+  });
+
+  buildGrid();
+  render();
+</script>
+</body>
+</html>
