@@ -2,6 +2,8 @@
 
 A browser-based pixel font editor for designing and exporting custom bitmap/vector fonts — no build step, no dependencies.
 
+**Live demo:** https://goodbyehorses.github.io/pixel-terminal-font/
+
 ## Features
 
 - **Grid editor** — click or drag to toggle pixels on each character in a 5×7 (configurable) grid
