@@ -171,6 +171,13 @@ body {
   cursor: crosshair;
 }
 
+#segment-note {
+  margin-top: 10px;
+  max-width: 260px;
+  font-size: 11px;
+  color: var(--ui-muted);
+}
+
 .grid-cell {
   width: 32px;
   height: 32px;
