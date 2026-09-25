@@ -13,9 +13,23 @@ const undoStack = [];
 const redoStack = [];
 
 function glyphSnapshot() {
-  return Object.fromEntries(
-    Object.entries(state.glyphs).map(([k, v]) => [k, [...v]])
-  );
+  return {
+    cols: state.params.cols,
+    rows: state.params.rows,
+    glyphs: Object.fromEntries(
+      Object.entries(state.glyphs).map(([k, v]) => [k, [...v]])
+    ),
+  };
+}
+
+// Restore glyphs + grid size (char styles like Condensed change the grid).
+function restoreSnapshot(snap) {
+  for (const [k, v] of Object.entries(snap.glyphs)) state.glyphs[k] = v;
+  if (snap.cols !== state.params.cols || snap.rows !== state.params.rows) {
+    state.params.cols = snap.cols;
+    state.params.rows = snap.rows;
+    syncParamControls();
+  }
 }
 
 function saveUndo() {
@@ -29,7 +43,7 @@ function undo() {
   if (!undoStack.length) return;
   redoStack.push(glyphSnapshot());
   const snap = undoStack.pop();
-  for (const [k, v] of Object.entries(snap)) state.glyphs[k] = v;
+  restoreSnapshot(snap);
   buildGridEditor();
   render();
   updateUndoUI();
@@ -39,7 +53,7 @@ function redo() {
   if (!redoStack.length) return;
   undoStack.push(glyphSnapshot());
   const snap = redoStack.pop();
-  for (const [k, v] of Object.entries(snap)) state.glyphs[k] = v;
+  restoreSnapshot(snap);
   buildGridEditor();
   render();
   updateUndoUI();
@@ -77,6 +91,10 @@ const state = {
     innerRadius:    0,
     bridgeRadius:   0,
     lockNodeRadius: true,
+    shapeWeight:   50,
+    showOff:       false,
+    offColor:     '#222222',
+    glow:           0,
   },
   glyphs: {},
 };
@@ -603,7 +621,50 @@ const DEFAULT_STYLES = [
     name: 'Outlined',
     params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 12, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',       cornerMerge: true, skewX: 0, outline: true,  outlineWidth: 3 },
   },
+  {
+    name: 'LED',
+    params: { cellWidth: 32, cellHeight: 32, gapX: 6, gapY: 6, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'circle',     cornerMerge: true, skewX: 0, showOff: true },
+  },
+  {
+    name: 'Diamond',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 2, gapY: 2, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'diamond',    cornerMerge: true, skewX: 0 },
+  },
+  {
+    name: 'Rings',
+    params: { cellWidth: 36, cellHeight: 36, gapX: 4, gapY: 4, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'ring',       cornerMerge: true, skewX: 0, shapeWeight: 35 },
+  },
+  {
+    name: 'Cross',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 4, gapY: 4, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'plus',       cornerMerge: true, skewX: 0, shapeWeight: 40 },
+  },
+  {
+    name: 'Honeycomb',
+    params: { cellWidth: 40, cellHeight: 44, gapX: 2, gapY: 0, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'hexagon',    cornerMerge: true, skewX: 0 },
+  },
+  {
+    name: 'Halftone',
+    params: { cellWidth: 36, cellHeight: 36, gapX: 2, gapY: 2, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'halftone',   cornerMerge: true, skewX: 0 },
+  },
+  {
+    name: 'Slope',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0, gapY: 0, cornerRadius: 12, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'slope',      cornerMerge: true, skewX: 0 },
+  },
+  {
+    name: 'Stripes',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0, gapY: 0, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'diagonal',   cornerMerge: true, skewX: 0, shapeWeight: 45 },
+  },
+  {
+    name: 'CRT',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'horizontal', cornerMerge: true, skewX: 0, glow: 6 },
+  },
+  {
+    name: 'Mosaic',
+    params: { cellWidth: 30, cellHeight: 30, gapX: 8, gapY: 8, cornerRadius: 2,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'tile',       cornerMerge: true, skewX: 0 },
+  },
 ];
+
+// Params presets don't always list — reset so one preset's effect doesn't leak into the next.
+const PRESET_RESETS = { outline: false, shapeWeight: 50, showOff: false, glow: 0 };
 
 const PARAM_DEFS = [
   { key: 'cellWidth',    label: 'Cell Width',     min: 6,  max: 120, step: 1, type: 'range',    hint: 'Pixel width of each grid cell' },
@@ -627,6 +688,10 @@ const PARAM_DEFS = [
   { key: 'cornerMerge',    label: 'Merge Corners',    type: 'checkbox', hint: 'Flatten corners where adjacent cells meet (smoother connected strokes)' },
   { key: 'lockNodeRadius', label: 'Lock Node Radius', type: 'checkbox', hint: 'Lock circular node to half the smallest cell side (matches prototype). Only applies to Nodes shape.' },
   { key: 'skewX',        label: 'Skew',           min: -30, max: 30,  step: 1, type: 'range',    hint: 'Italic slant angle in degrees (pure vector transform, exports correctly)' },
+  { key: 'shapeWeight',  label: 'Shape Weight',   min: 5,   max: 95,  step: 1, type: 'range',    hint: 'Ring thickness, cross arm width or stripe width (% of cell)' },
+  { key: 'showOff',      label: 'Unlit Pixels',                                 type: 'checkbox', hint: 'Draw OFF cells in a dim color (LED / dot-matrix board look)' },
+  { key: 'offColor',     label: 'Unlit Color',                                  type: 'color',    hint: 'Color of the unlit (OFF) cells' },
+  { key: 'glow',         label: 'Glow',           min: 0,   max: 30,  step: 1, type: 'range',    hint: 'CRT-style bloom around lit pixels (SVG blur filter)' },
 ];
 
 const PARAM_GROUPS = [
@@ -634,7 +699,7 @@ const PARAM_GROUPS = [
   { label: 'Cell',     keys: ['cellWidth', 'cellHeight'],                                         open: true  },
   { label: 'Gap',      keys: ['gapX', 'gapY'],                                                    open: true  },
   { label: 'Rounding', keys: ['cornerRadius', 'cornerMerge', 'lockNodeRadius'],                    open: true  },
-  { label: 'Style',    keys: ['diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX'], open: true  },
+  { label: 'Style',    keys: ['shapeWeight', 'diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX', 'showOff', 'offColor', 'glow'], open: true  },
   { label: 'Color',    keys: ['fgColor', 'bgColor'],                                              open: true  },
   { label: 'Export',   keys: ['padding', 'charSpacing'],                                          open: false },
 ];
@@ -706,7 +771,11 @@ function buildParamControls() {
   const shapeGrid = document.createElement('div');
   shapeGrid.className = 'presets-grid char-style-grid';
 
-  for (const [shape, label] of [['rect','Rect'],['circle','Circle'],['nodes','Nodes'],['horizontal','Horizontal'],['vertical','Vertical'],['pixel','Pixel']]) {
+  for (const [shape, label] of [
+    ['rect','Rect'],['circle','Circle'],['nodes','Nodes'],['horizontal','Horizontal'],['vertical','Vertical'],['pixel','Pixel'],
+    ['diamond','Diamond'],['ring','Ring'],['plus','Cross'],['hexagon','Hexagon'],['diagonal','Diagonal'],['halftone','Halftone'],
+    ['slope','Slope'],['tile','Tile'],
+  ]) {
     const btn = document.createElement('button');
     btn.className = 'preset-btn cell-shape-btn';
     btn.dataset.shape = shape;
@@ -915,15 +984,32 @@ function autoGenerate(targetHeight) {
 
 function applyCharStyle(style) {
   saveUndo();
+  const styleCols = style.cols ?? FONT_COLS;
+  const styleRows = style.rows ?? FONT_ROWS;
+  // While the grid is still some style's native size (user hasn't customised it),
+  // switch to this style's native grid — e.g. Condensed → 4×7, back to 5×7 after.
+  const onNativeGrid = CHAR_STYLES.some(s =>
+    (s.cols ?? FONT_COLS) === state.params.cols && (s.rows ?? FONT_ROWS) === state.params.rows);
+  if (onNativeGrid) {
+    state.params.cols = styleCols;
+    state.params.rows = styleRows;
+    syncParamControls();
+  }
   const { cols, rows } = state.params;
-  // Apply style glyphs for all chars in state — fall back to FONT_DATA for chars
-  // not defined in the style (numbers, nordic, punctuation only have one design).
+  // Apply style glyphs for all chars in state — fall back to the closest built-in
+  // map (then FONT_DATA) for chars the style doesn't define.
+  const fallbackMap = bestFontSource(styleCols, styleRows);
   for (const char of Object.keys(state.glyphs)) {
-    const srcData = style.data[char] ?? FONT_DATA[char];
+    let srcData = style.data[char], sc = styleCols, sr = styleRows;
+    if (!srcData && fallbackMap.data[char]) {
+      srcData = fallbackMap.data[char]; sc = fallbackMap.cols; sr = fallbackMap.rows;
+    } else if (!srcData) {
+      srcData = FONT_DATA[char]; sc = FONT_COLS; sr = FONT_ROWS;
+    }
     if (!srcData) continue;
-    state.glyphs[char] = (FONT_COLS === cols && FONT_ROWS === rows)
+    state.glyphs[char] = (sc === cols && sr === rows)
       ? [...srcData]
-      : scaleGlyph(srcData, FONT_COLS, FONT_ROWS, cols, rows);
+      : scaleGlyph(srcData, sc, sr, cols, rows);
   }
   // Update active button state
   document.querySelectorAll('.char-style-btn').forEach(b => {
@@ -953,7 +1039,7 @@ function applyCellShape(shape) {
 
 
 function applyPreset(preset) {
-  Object.assign(state.params, preset.params);
+  Object.assign(state.params, PRESET_RESETS, preset.params);
   if (preset.params.lockNodeRadius === undefined) state.params.lockNodeRadius = true;
   // Clamp cornerRadius to cell size
   const maxRad = Math.floor(Math.min(state.params.cellWidth, state.params.cellHeight) / 2);
@@ -1015,7 +1101,7 @@ function applyParam(key, value) {
 
   if (key === 'fgColor') document.documentElement.style.setProperty('--fg', value);
   if (key === 'bgColor') document.documentElement.style.setProperty('--bg', value);
-  if (key === 'outline') updateConditionalParams();
+  if (key === 'outline' || key === 'showOff') updateConditionalParams();
 
   renderEditorPreview();
   renderPreviewStrip();
@@ -1471,6 +1557,12 @@ function updateConditionalParams() {
   // lockNodeRadius only relevant for nodes
   const lockRow = document.querySelector('.param-row[data-param-key="lockNodeRadius"]');
   if (lockRow) lockRow.style.display = isNodes ? '' : 'none';
+
+  // shapeWeight only drives ring / plus / diagonal; offColor only with showOff
+  const weightRow = document.querySelector('.param-row[data-param-key="shapeWeight"]');
+  if (weightRow) weightRow.style.display = ['ring', 'plus', 'diagonal'].includes(state.params.cellShape) ? '' : 'none';
+  const offRow = document.querySelector('.param-row[data-param-key="offColor"]');
+  if (offRow) offRow.style.display = state.params.showOff ? '' : 'none';
 }
 
 function buildStylesUI() {

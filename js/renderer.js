@@ -35,6 +35,32 @@ function ellipseSubpath(cx, cy, rx, ry) {
 }
 
 /**
+ * Closed polygon subpath from [[x, y], ...] points (clockwise on screen).
+ */
+function polygonSubpath(pts) {
+  const p = (n) => Math.round(n * 100) / 100;
+  return pts.map(([x, y], i) => `${i ? 'L' : 'M'} ${p(x)} ${p(y)}`).join(' ') + ' Z';
+}
+
+/**
+ * Clip a polygon to the half-plane f(x, y) >= 0 (Sutherland–Hodgman, one edge).
+ * f must be affine so the edge intersection can be interpolated linearly.
+ */
+function clipHalfPlane(pts, f) {
+  const out = [];
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    const fa = f(a[0], a[1]), fb = f(b[0], b[1]);
+    if (fa >= 0) out.push(a);
+    if ((fa >= 0) !== (fb >= 0)) {
+      const t = fa / (fa - fb);
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return out;
+}
+
+/**
  * Resolve gapX / gapY from params, falling back to legacy 'gap' for old saved styles.
  */
 function resolveGaps(params) {
@@ -161,14 +187,15 @@ function generateNodesGeometry(data, cols, rows, params) {
  * @returns {string}       SVG path data (d attribute value)
  */
 function generateGlyphPath(data, cols, rows, params) {
-  if (params.cellShape === 'nodes') {
+  if (params.cellShape === 'nodes' && !params._isolated) {
     return generateNodesGeometry(data, cols, rows, params);
   }
   const {
     cellWidth, cellHeight, cornerRadius,
     cornerMerge = true,
-    cellShape = 'rect',
   } = params;
+  // Isolated Nodes (unlit layer) = plain node circles, no bridges.
+  const cellShape = params.cellShape === 'nodes' ? 'circle' : (params.cellShape || 'rect');
   const { gapX, gapY } = resolveGaps(params);
 
   const stepX = cellWidth + gapX;
@@ -183,8 +210,12 @@ function generateGlyphPath(data, cols, rows, params) {
   const subW = Math.max(1, Math.floor((cellWidth  - gapX) / 2));  // for pixel
   const subH = Math.max(1, Math.floor((cellHeight - gapY) / 2));  // for pixel
 
-  const isOn = (c, r) =>
+  const isCell = (c, r) =>
     c >= 0 && c < cols && r >= 0 && r < rows && data[r * cols + c] === 1;
+  // _isolated: every cell drawn alone (unlit layer) — neighbours never count.
+  const isOn = params._isolated ? () => false : isCell;
+  // Shape weight (ring thickness, plus arm, stripe width) as a 0–1 fraction.
+  const weight = Math.min(0.95, Math.max(0.05, (params.shapeWeight ?? 50) / 100));
 
   const parts = [];
 
@@ -193,7 +224,7 @@ function generateGlyphPath(data, cols, rows, params) {
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
-      if (!isOn(c, r)) continue;
+      if (!isCell(c, r)) continue;
 
       const nN  = isOn(c,     r - 1);
       const nS  = isOn(c,     r + 1);
@@ -245,6 +276,90 @@ function generateGlyphPath(data, cols, rows, params) {
         parts.push(rect(x,  y1, subW, subH));
         parts.push(rect(x1, y1, subW, subH));
 
+      } else if (cellShape === 'diamond') {
+        // Square rotated 45°, inscribed in the cell. No bridges.
+        parts.push(polygonSubpath([
+          [x + cw / 2, y], [x + cw, y + ch / 2], [x + cw / 2, y + ch], [x, y + ch / 2],
+        ]));
+
+      } else if (cellShape === 'hexagon') {
+        // Pointy-top hexagon inscribed in the cell. No bridges.
+        parts.push(polygonSubpath([
+          [x + cw / 2, y], [x + cw, y + ch / 4], [x + cw, y + ch * 3 / 4],
+          [x + cw / 2, y + ch], [x, y + ch * 3 / 4], [x, y + ch / 4],
+        ]));
+
+      } else if (cellShape === 'ring') {
+        // Outer ellipse clockwise + inner ellipse counter-clockwise = hollow (nonzero rule).
+        const rx = cw / 2, ry = ch / 2;
+        const t  = Math.min(rx, ry) * weight;
+        const irx = Math.max(0, rx - t), iry = Math.max(0, ry - t);
+        const cxm = x + rx, cym = y + ry;
+        parts.push(ellipseSubpath(cxm, cym, rx, ry));
+        if (irx > 0 && iry > 0) {
+          parts.push(`M ${p(cxm - irx)} ${p(cym)} A ${p(irx)} ${p(iry)} 0 1 0 ${p(cxm + irx)} ${p(cym)} A ${p(irx)} ${p(iry)} 0 1 0 ${p(cxm - irx)} ${p(cym)} Z`);
+        }
+
+      } else if (cellShape === 'plus') {
+        // Cross per cell; arms bridge the gap to ON neighbours.
+        const a  = Math.max(1, Math.min(cw, ch) * weight);
+        const ay = y + (ch - a) / 2;
+        const ax = x + (cw - a) / 2;
+        parts.push(rect(x, ay, cw, a));
+        parts.push(rect(ax, y, a, ch));
+        if (nE && gapX > 0) parts.push(rect(x + cw, ay, gapX, a));
+        if (nS && gapY > 0) parts.push(rect(ax, y + ch, a, gapY));
+
+      } else if (cellShape === 'diagonal') {
+        // "/" stripes: bands of X+Y (cell-unit coords) centred on 0, 1, 2 so the
+        // stripes continue across neighbouring cells when gaps are 0.
+        const h = weight / 2;
+        const sq = [[x, y], [x + cw, y], [x + cw, y + ch], [x, y + ch]];
+        const u = (px, py) => (px - x) / cw + (py - y) / ch;
+        for (const k of [0, 1, 2]) {
+          let poly = clipHalfPlane(sq, (px, py) => u(px, py) - (k - h));
+          poly = clipHalfPlane(poly, (px, py) => (k + h) - u(px, py));
+          if (poly.length >= 3) parts.push(polygonSubpath(poly));
+        }
+
+      } else if (cellShape === 'halftone') {
+        // Dot size grows with the number of ON neighbours (8-connected), full size at 4+.
+        const n = [nN, nS, nW, nE, nNE, nNW, nSE, nSW].filter(Boolean).length;
+        const s = 0.4 + 0.6 * (Math.min(n, 4) / 4);
+        parts.push(ellipseSubpath(x + cw / 2, y + ch / 2, (cw / 2) * s, (ch / 2) * s));
+
+      } else if (cellShape === 'tile') {
+        // Isolated rounded squares — never bridged or merged.
+        parts.push(roundedRectPath(x, y, cw, ch, rad, rad, rad, rad));
+
+      } else if (cellShape === 'slope') {
+        // Rect cells with 45° chamfered outer corners + filled diagonal bands
+        // between diagonal-only neighbours (smooth "sloped" pixel edges).
+        const cTL = (nN || nW) ? 0 : rad;
+        const cTR = (nN || nE) ? 0 : rad;
+        const cBR = (nS || nE) ? 0 : rad;
+        const cBL = (nS || nW) ? 0 : rad;
+        parts.push(polygonSubpath([
+          [x + cTL, y], [x + cw - cTR, y], [x + cw, y + cTR], [x + cw, y + ch - cBR],
+          [x + cw - cBR, y + ch], [x + cBL, y + ch], [x, y + ch - cBL], [x, y + cTL],
+        ]));
+        if (nE && gapX > 0) parts.push(rect(x + cw, y, gapX, ch));
+        if (nS && gapY > 0) parts.push(rect(x, y + ch, cw, gapY));
+        if (nE && nS && nSE && gapX > 0 && gapY > 0)
+          parts.push(rect(x + cw, y + ch, gapX, gapY));
+        // SE band: this cell's TR corner → SE cell's TR, SE cell's BL → this cell's BL
+        if (nSE && !nE && !nS) {
+          parts.push(polygonSubpath([
+            [x + cw, y], [x + stepX + cw, y + stepY], [x + stepX, y + stepY + ch], [x, y + ch],
+          ]));
+        }
+        // SW band (listed clockwise): TL → BR of this cell, then BR → TL of SW cell
+        if (nSW && !nW && !nS) {
+          parts.push(polygonSubpath([
+            [x, y], [x + cw, y + ch], [x - stepX + cw, y + stepY + ch], [x - stepX, y + stepY],
+          ]));
+        }
+
       } else {
         // rect (solid) — original behavior with cornerMerge + bridgeRadius
         const rTL = (cornerMerge && (nN || nW)) ? 0 : rad;
@@ -271,6 +386,38 @@ function generateGlyphPath(data, cols, rows, params) {
   }
 
   return parts.join(' ');
+}
+
+// Shapes without solid orthogonal joins — inner fillets would just punch holes.
+const NO_FILLET_SHAPES = ['circle', 'diamond', 'hexagon', 'ring', 'plus', 'diagonal', 'halftone', 'tile'];
+
+/**
+ * Unlit-pixel layer: every OFF cell drawn alone in offColor (LED / dot-matrix look).
+ * Returns a <path> line or '' when showOff is disabled.
+ */
+function generateOffLayer(data, cols, rows, params, ind) {
+  if (!params.showOff) return '';
+  const inverted = data.map(v => (v ? 0 : 1));
+  const d = generateGlyphPath(inverted, cols, rows, { ...params, _isolated: true });
+  return d ? `${ind}<path d="${d}" fill="${params.offColor || '#222222'}"/>` : '';
+}
+
+/**
+ * Glow filter (CRT bloom). Returns { defs, attr } — both '' when glow is 0.
+ * Ids are unique per call because many SVGs share one page (preview strip).
+ */
+let glowSeq = 0;
+function glowFilter(params) {
+  const g = params.glow || 0;
+  if (g <= 0) return { defs: '', attr: '' };
+  const id = `pfg-glow-${++glowSeq}`;
+  return {
+    defs: `<defs><filter id="${id}" x="-50%" y="-50%" width="200%" height="200%">` +
+          `<feGaussianBlur in="SourceGraphic" stdDeviation="${g}" result="b"/>` +
+          `<feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>` +
+          `</filter></defs>`,
+    attr: ` filter="url(#${id})"`,
+  };
 }
 
 /**
@@ -332,7 +479,7 @@ function generateInnerFilletPath(data, cols, rows, params) {
     }
     return cutters.join(' ');
   }
-  if (ir <= 0 || cellShape === 'circle') return '';
+  if (ir <= 0 || NO_FILLET_SHAPES.includes(cellShape)) return '';
 
   const stepX = cellWidth  + gapX;
   const stepY = cellHeight + gapY;
@@ -502,11 +649,17 @@ function generateGlyphSVG(data, cols, rows, params) {
   const useGroup      = !!transformAttr;
   const ind           = useGroup ? '    ' : '  ';
 
+  const glow = glowFilter(params);
+  if (glow.defs) lines.push(`  ${glow.defs}`);
   if (useGroup) lines.push(`  <g${transformAttr}>`);
+  const offLayer = generateOffLayer(data, cols, rows, params, ind);
+  if (offLayer) lines.push(offLayer);
+  if (glow.attr) lines.push(`${ind}<g${glow.attr}>`);
   if (isNodes && outline) lines.push(`${ind}<path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
   lines.push(`${ind}<path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
   if (filletData) lines.push(`${ind}<path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
   if (diagSVG) lines.push(ind + diagSVG.trim());
+  if (glow.attr) lines.push(`${ind}</g>`);
   if (useGroup) lines.push(`  </g>`);
 
   const body = lines.join('\n');
@@ -533,6 +686,7 @@ function scaleParams(params, targetCellHeight) {
     diagWidth:    Math.max(1, Math.round((params.diagWidth || 8) * scale)),
     padding:      Math.max(0, Math.round((params.padding || 0) * scale)),
     outlineWidth: Math.max(1, Math.round((params.outlineWidth != null ? params.outlineWidth : 3) * scale)),
+    glow:         (params.glow || 0) * scale,
     // skewX is an angle — does not scale
     // cellFill is a string enum — does not scale
   };
@@ -571,8 +725,14 @@ function generateTextSVG(glyphs, text, params) {
   if (bgColor !== 'transparent')
     lines.push(`  <rect width="${totalW}" height="${totalH}" fill="${bgColor}"/>`);
 
+  const glow = glowFilter(params);
+  if (glow.defs) lines.push(`  ${glow.defs}`);
+
   chars.forEach((ch, i) => {
-    const data = ch === ' ' ? null : glyphs[ch];
+    // Spaces show an all-unlit matrix when showOff is on (LED board look).
+    const data = ch === ' '
+      ? (params.showOff ? new Array(cols * rows).fill(0) : null)
+      : glyphs[ch];
     if (!data) return;
 
     const x = padding + textShift + i * advance;
@@ -590,10 +750,14 @@ function generateTextSVG(glyphs, text, params) {
     const strokeAttrs  = (outline && !isNodes) ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
 
     lines.push(`  <g transform="${transforms.join(' ')}">`);
+    const offLayer = generateOffLayer(data, cols, rows, params, '    ');
+    if (offLayer) lines.push(offLayer);
+    if (glow.attr) lines.push(`    <g${glow.attr}>`);
     if (isNodes && outline) lines.push(`    <path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
     lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
     if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
     if (diagSVG) lines.push('    ' + diagSVG.trim());
+    if (glow.attr) lines.push(`    </g>`);
     lines.push(`  </g>`);
   });
 
@@ -667,6 +831,9 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
   if (bgColor !== 'transparent')
     lines.push(`  <rect width="${svgW}" height="${svgH}" fill="${bgColor}"/>`);
 
+  const glow = glowFilter(params);
+  if (glow.defs) lines.push(`  ${glow.defs}`);
+
   allChars.forEach((ch, i) => {
     const data = glyphs[ch];
     if (!data) return;
@@ -689,10 +856,14 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
     const transforms = [`translate(${gx + skewShift},${gy})`];
     if (skewX !== 0) transforms.push(`skewX(${skewX})`);
     lines.push(`  <g id="glyph-${ch.codePointAt(0)}" transform="${transforms.join(' ')}">`);
+    const offLayer = generateOffLayer(data, cols, rows, params, '    ');
+    if (offLayer) lines.push(offLayer);
+    if (glow.attr) lines.push(`    <g${glow.attr}>`);
     if (isNodes && outline) lines.push(`    <path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
     lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
     if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
     if (diagSVG) lines.push('    ' + diagSVG.trim());
+    if (glow.attr) lines.push(`    </g>`);
     lines.push(`  </g>`);
   });
 
