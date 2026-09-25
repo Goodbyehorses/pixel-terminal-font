@@ -92,9 +92,9 @@ const state = {
     bridgeRadius:   0,
     lockNodeRadius: true,
     shapeWeight:   50,
+    dotSize:      100,
     showOff:       false,
     offColor:     '#222222',
-    glow:           0,
   },
   glyphs: {},
 };
@@ -654,17 +654,41 @@ const DEFAULT_STYLES = [
     params: { cellWidth: 40, cellHeight: 40, gapX: 0, gapY: 0, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'diagonal',   cornerMerge: true, skewX: 0, shapeWeight: 45 },
   },
   {
-    name: 'CRT',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'horizontal', cornerMerge: true, skewX: 0, glow: 6 },
-  },
-  {
     name: 'Mosaic',
     params: { cellWidth: 30, cellHeight: 30, gapX: 8, gapY: 8, cornerRadius: 2,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'tile',       cornerMerge: true, skewX: 0 },
+  },
+  {
+    name: 'LCD',
+    params: { cellWidth: 30, cellHeight: 34, gapX: 4, gapY: 4, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'tile',       cornerMerge: true, skewX: 0, showOff: true },
+  },
+  {
+    name: 'Open',
+    params: { cellWidth: 36, cellHeight: 36, gapX: 4, gapY: 4, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'open',       cornerMerge: true, skewX: 0, shapeWeight: 25 },
+  },
+  {
+    name: 'Dashed',
+    params: { cellWidth: 36, cellHeight: 36, gapX: 6, gapY: 6, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'dash',       cornerMerge: true, skewX: 0, shapeWeight: 35 },
+  },
+  {
+    name: 'Fine',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0, gapY: 0, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',       cornerMerge: true, skewX: 0, dotSize: 40 },
+  },
+  {
+    name: 'Pinpoint',
+    params: { cellWidth: 36, cellHeight: 36, gapX: 2, gapY: 2, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'circle',     cornerMerge: true, skewX: 0, dotSize: 60, showOff: true },
+  },
+  {
+    name: '7-Segment',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'seg7',       cornerMerge: true, skewX: -6, showOff: true },
+  },
+  {
+    name: '16-Segment',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'seg16',      cornerMerge: true, skewX: 0, showOff: true, shapeWeight: 35 },
   },
 ];
 
 // Params presets don't always list — reset so one preset's effect doesn't leak into the next.
-const PRESET_RESETS = { outline: false, shapeWeight: 50, showOff: false, glow: 0 };
+const PRESET_RESETS = { outline: false, shapeWeight: 50, showOff: false, dotSize: 100 };
 
 const PARAM_DEFS = [
   { key: 'cellWidth',    label: 'Cell Width',     min: 6,  max: 120, step: 1, type: 'range',    hint: 'Pixel width of each grid cell' },
@@ -688,18 +712,18 @@ const PARAM_DEFS = [
   { key: 'cornerMerge',    label: 'Merge Corners',    type: 'checkbox', hint: 'Flatten corners where adjacent cells meet (smoother connected strokes)' },
   { key: 'lockNodeRadius', label: 'Lock Node Radius', type: 'checkbox', hint: 'Lock circular node to half the smallest cell side (matches prototype). Only applies to Nodes shape.' },
   { key: 'skewX',        label: 'Skew',           min: -30, max: 30,  step: 1, type: 'range',    hint: 'Italic slant angle in degrees (pure vector transform, exports correctly)' },
+  { key: 'dotSize',      label: 'Dot Size',       min: 10,  max: 100, step: 1, type: 'range',    hint: 'Draw each pixel at this % of its cell — thins joined strokes, shrinks separate dots' },
   { key: 'shapeWeight',  label: 'Shape Weight',   min: 5,   max: 95,  step: 1, type: 'range',    hint: 'Ring thickness, cross arm width or stripe width (% of cell)' },
   { key: 'showOff',      label: 'Unlit Pixels',                                 type: 'checkbox', hint: 'Draw OFF cells in a dim color (LED / dot-matrix board look)' },
   { key: 'offColor',     label: 'Unlit Color',                                  type: 'color',    hint: 'Color of the unlit (OFF) cells' },
-  { key: 'glow',         label: 'Glow',           min: 0,   max: 30,  step: 1, type: 'range',    hint: 'CRT-style bloom around lit pixels (SVG blur filter)' },
 ];
 
 const PARAM_GROUPS = [
   { label: 'Grid',     keys: ['cols', 'rows'],                                                   open: true  },
-  { label: 'Cell',     keys: ['cellWidth', 'cellHeight'],                                         open: true  },
+  { label: 'Cell',     keys: ['cellWidth', 'cellHeight', 'dotSize'],                                         open: true  },
   { label: 'Gap',      keys: ['gapX', 'gapY'],                                                    open: true  },
   { label: 'Rounding', keys: ['cornerRadius', 'cornerMerge', 'lockNodeRadius'],                    open: true  },
-  { label: 'Style',    keys: ['shapeWeight', 'diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX', 'showOff', 'offColor', 'glow'], open: true  },
+  { label: 'Style',    keys: ['shapeWeight', 'diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX', 'showOff', 'offColor'], open: true  },
   { label: 'Color',    keys: ['fgColor', 'bgColor'],                                              open: true  },
   { label: 'Export',   keys: ['padding', 'charSpacing'],                                          open: false },
 ];
@@ -774,7 +798,7 @@ function buildParamControls() {
   for (const [shape, label] of [
     ['rect','Rect'],['circle','Circle'],['nodes','Nodes'],['horizontal','Horizontal'],['vertical','Vertical'],['pixel','Pixel'],
     ['diamond','Diamond'],['ring','Ring'],['plus','Cross'],['hexagon','Hexagon'],['diagonal','Diagonal'],['halftone','Halftone'],
-    ['slope','Slope'],['tile','Tile'],
+    ['slope','Slope'],['tile','Tile'],['open','Open'],['dash','Dash'],['seg7','7-Seg'],['seg16','16-Seg'],
   ]) {
     const btn = document.createElement('button');
     btn.className = 'preset-btn cell-shape-btn';
@@ -1166,7 +1190,7 @@ function renderEditorPreview() {
   const data = state.glyphs[state.currentChar];
   if (!data) return;
   document.getElementById('editor-preview').innerHTML =
-    generateGlyphSVG(data, cols, rows, state.params);
+    generateGlyphSVG(data, cols, rows, state.params, state.currentChar);
 }
 
 function renderPreviewStrip(onlyChar) {
@@ -1179,7 +1203,7 @@ function renderPreviewStrip(onlyChar) {
     for (const cell of strip.querySelectorAll('.preview-char')) {
       if (cell.dataset.char === onlyChar) {
         const data = state.glyphs[onlyChar];
-        if (data) cell.innerHTML = generateGlyphSVG(data, cols, rows, previewParams);
+        if (data) cell.innerHTML = generateGlyphSVG(data, cols, rows, previewParams, onlyChar);
         return;
       }
     }
@@ -1197,7 +1221,7 @@ function renderPreviewStrip(onlyChar) {
       cell.dataset.char = char;
       cell.title = char;
       cell.addEventListener('click', () => selectChar(char));
-      cell.innerHTML = generateGlyphSVG(data, cols, rows, previewParams);
+      cell.innerHTML = generateGlyphSVG(data, cols, rows, previewParams, char);
       strip.appendChild(cell);
     }
   }
@@ -1292,7 +1316,7 @@ function exportTypeTester() {
 
 function exportCurrent() {
   const { cols, rows } = state.params;
-  const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params);
+  const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params, state.currentChar);
   downloadSVG(`${state.currentChar.toLowerCase()}.svg`, svg);
   showToast(`Exported ${state.currentChar.toLowerCase()}.svg`);
 }
@@ -1301,7 +1325,7 @@ function exportAll() {
   const { cols, rows } = state.params;
   let count = 0;
   for (const char of Object.keys(state.glyphs)) {
-    const svg = generateGlyphSVG(state.glyphs[char], cols, rows, state.params);
+    const svg = generateGlyphSVG(state.glyphs[char], cols, rows, state.params, char);
     downloadSVG(`${char.toLowerCase()}.svg`, svg);
     count++;
   }
@@ -1310,7 +1334,7 @@ function exportAll() {
 
 function exportCurrentPNG() {
   const { cols, rows } = state.params;
-  const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params);
+  const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params, state.currentChar);
   const scale = parseInt(document.getElementById('png-scale')?.value) || 4;
   downloadPNG(`${state.currentChar.toLowerCase()}.png`, svg, scale);
   showToast(`Exported ${state.currentChar.toLowerCase()}.png ×${scale}`);
@@ -1560,9 +1584,12 @@ function updateConditionalParams() {
 
   // shapeWeight only drives ring / plus / diagonal; offColor only with showOff
   const weightRow = document.querySelector('.param-row[data-param-key="shapeWeight"]');
-  if (weightRow) weightRow.style.display = ['ring', 'plus', 'diagonal'].includes(state.params.cellShape) ? '' : 'none';
+  if (weightRow) weightRow.style.display = ['ring', 'plus', 'diagonal', 'open', 'dash', 'seg7', 'seg16'].includes(state.params.cellShape) ? '' : 'none';
   const offRow = document.querySelector('.param-row[data-param-key="offColor"]');
   if (offRow) offRow.style.display = state.params.showOff ? '' : 'none';
+
+  const segNote = document.getElementById('segment-note');
+  if (segNote) segNote.hidden = !['seg7', 'seg16'].includes(state.params.cellShape);
 }
 
 function buildStylesUI() {

@@ -750,6 +750,20 @@ const FONT_DATA_STENCIL = glyphsFromRows({
   9: ['.#.#.', '#...#', '#...#', '.#.##', '....#', '....#', '.#.#.'],
 });
 
+// ── Character style: "LCD" — character-LCD 5×8 cell: the 7-row set on top plus a
+// descender row, so g j p q y and the comma drop below the baseline instead of riding high.
+const FONT_DATA_LCD = Object.fromEntries(
+  Object.entries(FONT_DATA).map(([ch, d]) => [ch, [...d, 0, 0, 0, 0, 0]])
+);
+Object.assign(FONT_DATA_LCD, glyphsFromRows({
+  g: ['.....', '.....', '.####', '#...#', '#...#', '.####', '....#', '.###.'],
+  j: ['...#.', '.....', '..##.', '...#.', '...#.', '...#.', '#..#.', '.##..'],
+  p: ['.....', '.....', '####.', '#...#', '#...#', '####.', '#....', '#....'],
+  q: ['.....', '.....', '.####', '#...#', '#...#', '.####', '....#', '....#'],
+  y: ['.....', '.....', '#...#', '#...#', '#...#', '.####', '....#', '.###.'],
+  ',': ['.....', '.....', '.....', '.....', '.....', '.##..', '..#..', '.#...'],
+}));
+
 // ── Character style registry — 5×7 unless the entry sets cols/rows ──
 const CHAR_STYLES = [
   { name: 'Classic',   data: FONT_DATA },
@@ -761,6 +775,7 @@ const CHAR_STYLES = [
   { name: 'Condensed', data: FONT_DATA_CONDENSED, cols: 4, rows: 7 },
   { name: 'Italic',    data: FONT_DATA_ITALIC },
   { name: 'Stencil',   data: FONT_DATA_STENCIL },
+  { name: 'LCD',       data: FONT_DATA_LCD, cols: 5, rows: 8 },
 ];
 
 // ── All available font maps keyed by "cols×rows" ───────────────────

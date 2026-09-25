@@ -81,14 +81,34 @@ function skewExtraWidth(skewX, contentH) {
 
 
 /**
- * Resolve the effective node radius from params (respects lockNodeRadius).
+ * Dot Size: each cell's shape is drawn at dotSize% of the cell, centred; the space
+ * it gives up is added to the gap (so bridges still join neighbours → thinner strokes).
+ * Returns the shrunk cell box plus the original ("base") gaps and the centring offset.
+ */
+function dotBox(params) {
+  const s = Math.min(1, Math.max(0.1, (params.dotSize ?? 100) / 100));
+  const { gapX: baseGapX, gapY: baseGapY } = resolveGaps(params);
+  const cellWidth  = params.cellWidth  * s;
+  const cellHeight = params.cellHeight * s;
+  return {
+    cellWidth, cellHeight, baseGapX, baseGapY,
+    gapX: baseGapX + params.cellWidth  - cellWidth,
+    gapY: baseGapY + params.cellHeight - cellHeight,
+    ox: (params.cellWidth  - cellWidth)  / 2,
+    oy: (params.cellHeight - cellHeight) / 2,
+  };
+}
+
+/**
+ * Resolve the effective node radius from params (respects lockNodeRadius and dotSize).
  */
 function resolveNodeR(params) {
   if (params._nodeR != null) return params._nodeR;
   const maxR = Math.min(params.cellWidth, params.cellHeight) / 2;
-  return (params.lockNodeRadius !== false)
+  const r = (params.lockNodeRadius !== false)
     ? maxR
     : Math.max(0, Math.min(params.cornerRadius || 0, maxR));
+  return r * Math.min(1, Math.max(0.1, (params.dotSize ?? 100) / 100));
 }
 
 /**
@@ -187,16 +207,19 @@ function generateNodesGeometry(data, cols, rows, params) {
  * @returns {string}       SVG path data (d attribute value)
  */
 function generateGlyphPath(data, cols, rows, params) {
+  if (SEGMENT_SHAPES.includes(params.cellShape)) {
+    return generateSegmentPath(params._char, cols, rows, params, !!params._isolated);
+  }
   if (params.cellShape === 'nodes' && !params._isolated) {
     return generateNodesGeometry(data, cols, rows, params);
   }
   const {
-    cellWidth, cellHeight, cornerRadius,
+    cornerRadius,
     cornerMerge = true,
   } = params;
   // Isolated Nodes (unlit layer) = plain node circles, no bridges.
   const cellShape = params.cellShape === 'nodes' ? 'circle' : (params.cellShape || 'rect');
-  const { gapX, gapY } = resolveGaps(params);
+  const { cellWidth, cellHeight, gapX, gapY, baseGapX, baseGapY, ox, oy } = dotBox(params);
 
   const stepX = cellWidth + gapX;
   const stepY = cellHeight + gapY;
@@ -205,10 +228,11 @@ function generateGlyphPath(data, cols, rows, params) {
   const bvr = Math.min(params.bridgeRadius || 0, gapY > 0 ? gapY / 2 : 0, cellWidth  / 2);
   const p = (n) => Math.round(n * 100) / 100;
   // Intra-cell gap = inter-cell gap on the same axis → continuous even rhythm.
-  const barH = Math.max(1, Math.floor((cellHeight - gapY) / 2));  // for horizontal
-  const barW = Math.max(1, Math.floor((cellWidth  - gapX) / 2));  // for vertical
-  const subW = Math.max(1, Math.floor((cellWidth  - gapX) / 2));  // for pixel
-  const subH = Math.max(1, Math.floor((cellHeight - gapY) / 2));  // for pixel
+  // Uses the base gap so Dot Size doesn't widen the split inside a cell.
+  const barH = Math.max(1, Math.floor((cellHeight - baseGapY) / 2));  // for horizontal
+  const barW = Math.max(1, Math.floor((cellWidth  - baseGapX) / 2));  // for vertical
+  const subW = Math.max(1, Math.floor((cellWidth  - baseGapX) / 2));  // for pixel
+  const subH = Math.max(1, Math.floor((cellHeight - baseGapY) / 2));  // for pixel
 
   const isCell = (c, r) =>
     c >= 0 && c < cols && r >= 0 && r < rows && data[r * cols + c] === 1;
@@ -235,8 +259,8 @@ function generateGlyphPath(data, cols, rows, params) {
       const nNE = isOn(c + 1, r - 1);
       const nSW = isOn(c - 1, r + 1);
 
-      const x = c * stepX;
-      const y = r * stepY;
+      const x = c * stepX + ox;
+      const y = r * stepY + oy;
       const cw = cellWidth;
       const ch = cellHeight;
 
@@ -328,6 +352,21 @@ function generateGlyphPath(data, cols, rows, params) {
         const s = 0.4 + 0.6 * (Math.min(n, 4) / 4);
         parts.push(ellipseSubpath(x + cw / 2, y + ch / 2, (cw / 2) * s, (ch / 2) * s));
 
+      } else if (cellShape === 'open') {
+        // Square outline per cell: outer clockwise + inner counter-clockwise = hollow.
+        const t = Math.max(0.5, (Math.min(cw, ch) / 2) * weight);
+        parts.push(rect(x, y, cw, ch));
+        if (t < Math.min(cw, ch) / 2) {
+          parts.push(`M ${p(x + t)} ${p(y + t)} V ${p(y + ch - t)} H ${p(x + cw - t)} V ${p(y + t)} Z`);
+        }
+
+      } else if (cellShape === 'dash') {
+        // Short bar per cell, never bridged. Runs vertically in vertical-only
+        // strokes, horizontally otherwise — strokes read as dashed lines.
+        const a = Math.max(1, Math.min(cw, ch) * weight);
+        if ((nN || nS) && !(nE || nW)) parts.push(rect(x + (cw - a) / 2, y, a, ch));
+        else                           parts.push(rect(x, y + (ch - a) / 2, cw, a));
+
       } else if (cellShape === 'tile') {
         // Isolated rounded squares — never bridged or merged.
         parts.push(roundedRectPath(x, y, cw, ch, rad, rad, rad, rad));
@@ -388,8 +427,120 @@ function generateGlyphPath(data, cols, rows, params) {
   return parts.join(' ');
 }
 
+// ─────────────────────────────────────────────
+//  Segment displays (7- and 16-segment)
+// ─────────────────────────────────────────────
+
+const SEGMENT_SHAPES = ['seg7', 'seg16'];
+
+// 7-segment: a top, b upper-right, c lower-right, d bottom, e lower-left,
+// f upper-left, g middle. Letters are the usual display compromises.
+const SEG7_MAP = {
+  '0': 'abcdef', '1': 'bc', '2': 'abdeg', '3': 'abcdg', '4': 'bcfg',
+  '5': 'acdfg', '6': 'acdefg', '7': 'abc', '8': 'abcdefg', '9': 'abcdfg',
+  A: 'abcefg', B: 'cdefg', C: 'adef', D: 'bcdeg', E: 'adefg', F: 'aefg',
+  G: 'acdef', H: 'bcefg', I: 'ef', J: 'bcde', K: 'acefg', L: 'def',
+  M: 'abcef', N: 'ceg', O: 'abcdef', P: 'abefg', Q: 'abcfg', R: 'eg',
+  S: 'acdfg', T: 'defg', U: 'bcdef', V: 'cde', W: 'bdf', X: 'bcefg',
+  Y: 'bcdfg', Z: 'abdeg',
+  '-': 'g', '_': 'd', '=': 'dg', "'": 'f', '"': 'bf', '[': 'adef', ']': 'abcd',
+  '(': 'adef', ')': 'abcd', '?': 'abeg', '!': 'bc', '|': 'ef', '^': 'abf', '°': 'abfg',
+};
+
+// 16-segment: a1/a2 top halves, b/c right, d1/d2 bottom halves, e/f left,
+// g1/g2 middle halves, i/l centre verticals, h/j/k/m diagonals (TL, TR, BL, BR).
+const SEG16_MAP = {
+  '0': 'a1 a2 b c d1 d2 e f j k', '1': 'b c j', '2': 'a1 a2 b g1 g2 e d1 d2',
+  '3': 'a1 a2 b c d1 d2 g2', '4': 'f g1 g2 b c', '5': 'a1 a2 f g1 g2 c d1 d2',
+  '6': 'a1 a2 f e d1 d2 c g1 g2', '7': 'a1 a2 b c', '8': 'a1 a2 b c d1 d2 e f g1 g2',
+  '9': 'a1 a2 b c d1 d2 f g1 g2',
+  A: 'a1 a2 b c e f g1 g2', B: 'a1 a2 b c d1 d2 g2 i l', C: 'a1 a2 f e d1 d2',
+  D: 'a1 a2 b c d1 d2 i l', E: 'a1 a2 f e d1 d2 g1', F: 'a1 a2 f e g1',
+  G: 'a1 a2 f e d1 d2 c g2', H: 'f e b c g1 g2', I: 'a1 a2 i l d1 d2',
+  J: 'b c d1 d2 e', K: 'f e g1 j m', L: 'f e d1 d2', M: 'f e b c h j',
+  N: 'f e b c h m', O: 'a1 a2 b c d1 d2 e f', P: 'a1 a2 b f e g1 g2',
+  Q: 'a1 a2 b c d1 d2 e f m', R: 'a1 a2 b f e g1 g2 m', S: 'a1 a2 f g1 g2 c d1 d2',
+  T: 'a1 a2 i l', U: 'f e d1 d2 c b', V: 'f e k j', W: 'f e c b k m',
+  X: 'h j k m', Y: 'h j l', Z: 'a1 a2 j k d1 d2',
+  '-': 'g1 g2', '_': 'd1 d2', '+': 'g1 g2 i l', '*': 'g1 g2 h i j k l m',
+  '/': 'j k', '\\': 'h m', '=': 'g1 g2 d1 d2', '|': 'i l', '(': 'j m', ')': 'h k',
+  '<': 'j m', '>': 'h k', "'": 'i', '"': 'f i', '!': 'i', '?': 'a1 a2 b g2 l',
+  '[': 'a2 i l d2', ']': 'a1 i l d1', '$': 'a1 a2 f g1 g2 c d1 d2 i l',
+  '%': 'a1 f g1 i j k l g2 c d2', '@': 'a1 a2 b c d1 d2 e g2 i', '#': 'b c g1 g2 i l d1 d2',
+  '^': 'k m', ',': 'k', '.': 'd1', ':': 'i l',
+  'Å': 'a1 a2 b c e f g1 g2', 'Ä': 'a1 a2 b c e f g1 g2', 'Ö': 'a1 a2 b c d1 d2 e f',
+};
+
+/**
+ * Segment display glyph path. The glyph box is the full pixel-glyph box, so cell
+ * size / gap / grid still set the overall size. Thickness comes from shapeWeight.
+ * unlit=true returns the segments that are OFF (for the Unlit Pixels layer).
+ */
+function generateSegmentPath(ch, cols, rows, params, unlit) {
+  const { cellWidth, cellHeight } = params;
+  const { gapX, gapY } = resolveGaps(params);
+  const W = cols * (cellWidth + gapX) - gapX;
+  const H = rows * (cellHeight + gapY) - gapY;
+  const weight = Math.min(0.95, Math.max(0.05, (params.shapeWeight ?? 50) / 100));
+  const t = Math.max(1, Math.min(W, H) * 0.35 * weight);   // segment thickness
+  const g = Math.max(0.5, t * 0.12);                       // gap between segments
+  const h = t / 2;
+
+  const is16 = params.cellShape === 'seg16';
+  const map  = is16 ? SEG16_MAP : SEG7_MAP;
+  const key  = ch == null ? '' : (map[ch] != null ? ch : ch.toUpperCase());
+  const spec = map[key] || '';
+  const lit  = new Set(is16 ? spec.split(' ').filter(Boolean) : spec.split(''));
+
+  const L = h, R = W - h, T = h, B = H - h, M = H / 2, C = W / 2;
+  const hSeg = (x0, x1, y) => [
+    [x0 + g, y], [x0 + g + h, y - h], [x1 - g - h, y - h],
+    [x1 - g, y], [x1 - g - h, y + h], [x0 + g + h, y + h],
+  ];
+  const vSeg = (x, y0, y1) => [
+    [x, y0 + g], [x + h, y0 + g + h], [x + h, y1 - g - h],
+    [x, y1 - g], [x - h, y1 - g - h], [x - h, y0 + g + h],
+  ];
+  // Diagonal bar between two points, trimmed at both ends so it clears the frame.
+  const dSeg = (x0, y0, x1, y1) => {
+    const len = Math.hypot(x1 - x0, y1 - y0);
+    const ux = (x1 - x0) / len, uy = (y1 - y0) / len;
+    const trim = g + t * 0.9;
+    const ax = x0 + ux * trim, ay = y0 + uy * trim;
+    const bx = x1 - ux * trim, by = y1 - uy * trim;
+    const nx = -uy * h * 0.8, ny = ux * h * 0.8;
+    return [[ax + nx, ay + ny], [bx + nx, by + ny], [bx - nx, by - ny], [ax - nx, ay - ny]];
+  };
+
+  const segs = is16 ? {
+    a1: hSeg(L, C, T), a2: hSeg(C, R, T), d1: hSeg(L, C, B), d2: hSeg(C, R, B),
+    g1: hSeg(L, C, M), g2: hSeg(C, R, M),
+    f: vSeg(L, T, M), b: vSeg(R, T, M), e: vSeg(L, M, B), c: vSeg(R, M, B),
+    i: vSeg(C, T, M), l: vSeg(C, M, B),
+    h: dSeg(L, T, C, M), j: dSeg(R, T, C, M), k: dSeg(L, B, C, M), m: dSeg(R, B, C, M),
+  } : {
+    a: hSeg(L, R, T), g: hSeg(L, R, M), d: hSeg(L, R, B),
+    f: vSeg(L, T, M), b: vSeg(R, T, M), e: vSeg(L, M, B), c: vSeg(R, M, B),
+  };
+
+  // Keep every polygon clockwise so overlaps never cancel under nonzero fill.
+  const cw = (pts) => {
+    let a = 0;
+    for (let n = 0; n < pts.length; n++) {
+      const [x1, y1] = pts[n], [x2, y2] = pts[(n + 1) % pts.length];
+      a += x1 * y2 - x2 * y1;
+    }
+    return a < 0 ? [...pts].reverse() : pts;
+  };
+
+  return Object.entries(segs)
+    .filter(([name]) => lit.has(name) !== unlit)
+    .map(([, pts]) => polygonSubpath(cw(pts)))
+    .join(' ');
+}
+
 // Shapes without solid orthogonal joins — inner fillets would just punch holes.
-const NO_FILLET_SHAPES = ['circle', 'diamond', 'hexagon', 'ring', 'plus', 'diagonal', 'halftone', 'tile'];
+const NO_FILLET_SHAPES = ['circle', 'diamond', 'hexagon', 'ring', 'plus', 'diagonal', 'halftone', 'tile', 'open', 'dash', 'seg7', 'seg16'];
 
 /**
  * Unlit-pixel layer: every OFF cell drawn alone in offColor (LED / dot-matrix look).
@@ -403,24 +554,6 @@ function generateOffLayer(data, cols, rows, params, ind) {
 }
 
 /**
- * Glow filter (CRT bloom). Returns { defs, attr } — both '' when glow is 0.
- * Ids are unique per call because many SVGs share one page (preview strip).
- */
-let glowSeq = 0;
-function glowFilter(params) {
-  const g = params.glow || 0;
-  if (g <= 0) return { defs: '', attr: '' };
-  const id = `pfg-glow-${++glowSeq}`;
-  return {
-    defs: `<defs><filter id="${id}" x="-50%" y="-50%" width="200%" height="200%">` +
-          `<feGaussianBlur in="SourceGraphic" stdDeviation="${g}" result="b"/>` +
-          `<feMerge><feMergeNode in="b"/><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>` +
-          `</filter></defs>`,
-    attr: ` filter="url(#${id})"`,
-  };
-}
-
-/**
  * Generate concave inner fillet path data (drawn in bgColor OVER the glyph).
  *
  * At each L / T / + junction where two orthogonal neighbors are both ON but
@@ -431,19 +564,17 @@ function glowFilter(params) {
  * Returns empty string when innerRadius = 0 or cellShape = 'circle'.
  */
 function generateInnerFilletPath(data, cols, rows, params) {
-  const { cellWidth, cellHeight, cornerRadius, cornerMerge = true, cellShape = 'rect' } = params;
-  const { gapX, gapY } = resolveGaps(params);
+  const { cornerRadius, cornerMerge = true, cellShape = 'rect' } = params;
+  const { cellWidth, cellHeight, gapX, gapY, ox, oy } = dotBox(params);
   const ir = params.innerRadius || 0;
   if (cellShape === 'nodes') {
     // Cutter circles drawn in bgColor on top of positive shapes — carve concave fillets.
     const { gapX: gx, gapY: gy } = resolveGaps(params);
-    const lock2 = params.lockNodeRadius !== false;
-    const maxR2 = Math.min(cellWidth, cellHeight) / 2;
-    const nodeR2 = lock2 ? maxR2 : Math.max(0, Math.min(params.cornerRadius || 0, maxR2));
-    const stepX2 = cellWidth + gx;
-    const stepY2 = cellHeight + gy;
-    const cx2 = (c) => c * stepX2 + cellWidth / 2;
-    const cy2 = (r) => r * stepY2 + cellHeight / 2;
+    const nodeR2 = resolveNodeR(params);
+    const stepX2 = params.cellWidth + gx;
+    const stepY2 = params.cellHeight + gy;
+    const cx2 = (c) => c * stepX2 + params.cellWidth / 2;
+    const cy2 = (r) => r * stepY2 + params.cellHeight / 2;
     const isOn2 = (c, r) =>
       c >= 0 && c < cols && r >= 0 && r < rows && data[r * cols + c] === 1;
     const cutters = [];
@@ -503,8 +634,8 @@ function generateInnerFilletPath(data, cols, rows, params) {
       const nNE = isOn(c + 1, r - 1);
       const nSW = isOn(c - 1, r + 1);
       const nSE = isOn(c + 1, r + 1);
-      const x = c * stepX;
-      const y = r * stepY;
+      const x = c * stepX + ox;
+      const y = r * stepY + oy;
 
       // When cornerMerge=false, the cell's own rounding (rad) already carves away the
       // corner. The fillet must extend PAST that rounding to bite into filled area.
@@ -552,7 +683,7 @@ function generateInnerFilletPath(data, cols, rows, params) {
 function generateDiagLines(data, cols, rows, params) {
   const { cellWidth, cellHeight, diagFill, diagWidth = 8, fgColor = '#ffffff' } = params;
   const { gapX, gapY } = resolveGaps(params);
-  if (!diagFill || diagWidth <= 0 || params.cellShape === 'nodes') return '';
+  if (!diagFill || diagWidth <= 0 || params.cellShape === 'nodes' || SEGMENT_SHAPES.includes(params.cellShape)) return '';
 
   const stepX = cellWidth + gapX;
   const stepY = cellHeight + gapY;
@@ -610,7 +741,8 @@ function glyphDimensions(cols, rows, params) {
  *
  * Supports skewX (italic slant).
  */
-function generateGlyphSVG(data, cols, rows, params) {
+function generateGlyphSVG(data, cols, rows, params, ch) {
+  params = { ...params, _char: ch };  // segment shapes draw from the character, not pixels
   const { fgColor = '#ffffff', bgColor = '#000000', padding = 0 } = params;
   const { gapX, gapY } = resolveGaps(params);
   const { w, h } = glyphDimensions(cols, rows, params);
@@ -649,17 +781,13 @@ function generateGlyphSVG(data, cols, rows, params) {
   const useGroup      = !!transformAttr;
   const ind           = useGroup ? '    ' : '  ';
 
-  const glow = glowFilter(params);
-  if (glow.defs) lines.push(`  ${glow.defs}`);
   if (useGroup) lines.push(`  <g${transformAttr}>`);
   const offLayer = generateOffLayer(data, cols, rows, params, ind);
   if (offLayer) lines.push(offLayer);
-  if (glow.attr) lines.push(`${ind}<g${glow.attr}>`);
   if (isNodes && outline) lines.push(`${ind}<path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
   lines.push(`${ind}<path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
   if (filletData) lines.push(`${ind}<path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
   if (diagSVG) lines.push(ind + diagSVG.trim());
-  if (glow.attr) lines.push(`${ind}</g>`);
   if (useGroup) lines.push(`  </g>`);
 
   const body = lines.join('\n');
@@ -686,7 +814,6 @@ function scaleParams(params, targetCellHeight) {
     diagWidth:    Math.max(1, Math.round((params.diagWidth || 8) * scale)),
     padding:      Math.max(0, Math.round((params.padding || 0) * scale)),
     outlineWidth: Math.max(1, Math.round((params.outlineWidth != null ? params.outlineWidth : 3) * scale)),
-    glow:         (params.glow || 0) * scale,
     // skewX is an angle — does not scale
     // cellFill is a string enum — does not scale
   };
@@ -725,9 +852,6 @@ function generateTextSVG(glyphs, text, params) {
   if (bgColor !== 'transparent')
     lines.push(`  <rect width="${totalW}" height="${totalH}" fill="${bgColor}"/>`);
 
-  const glow = glowFilter(params);
-  if (glow.defs) lines.push(`  ${glow.defs}`);
-
   chars.forEach((ch, i) => {
     // Spaces show an all-unlit matrix when showOff is on (LED board look).
     const data = ch === ' '
@@ -739,7 +863,8 @@ function generateTextSVG(glyphs, text, params) {
     const transforms = [`translate(${x},${padding})`];
     if (skewX !== 0) transforms.push(`skewX(${skewX})`);
 
-    const pathData   = generateGlyphPath(data, cols, rows, params);
+    const gp         = { ...params, _char: ch };
+    const pathData   = generateGlyphPath(data, cols, rows, gp);
     const filletData = generateInnerFilletPath(data, cols, rows, params);
     const diagSVG    = generateDiagLines(data, cols, rows, params);
 
@@ -750,14 +875,12 @@ function generateTextSVG(glyphs, text, params) {
     const strokeAttrs  = (outline && !isNodes) ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
 
     lines.push(`  <g transform="${transforms.join(' ')}">`);
-    const offLayer = generateOffLayer(data, cols, rows, params, '    ');
+    const offLayer = generateOffLayer(data, cols, rows, gp, '    ');
     if (offLayer) lines.push(offLayer);
-    if (glow.attr) lines.push(`    <g${glow.attr}>`);
     if (isNodes && outline) lines.push(`    <path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
     lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
     if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
     if (diagSVG) lines.push('    ' + diagSVG.trim());
-    if (glow.attr) lines.push(`    </g>`);
     lines.push(`  </g>`);
   });
 
@@ -831,13 +954,11 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
   if (bgColor !== 'transparent')
     lines.push(`  <rect width="${svgW}" height="${svgH}" fill="${bgColor}"/>`);
 
-  const glow = glowFilter(params);
-  if (glow.defs) lines.push(`  ${glow.defs}`);
-
   allChars.forEach((ch, i) => {
     const data = glyphs[ch];
     if (!data) return;
-    const pathData   = generateGlyphPath(data, cols, rows, params);
+    const gp         = { ...params, _char: ch };
+    const pathData   = generateGlyphPath(data, cols, rows, gp);
     const filletData = generateInnerFilletPath(data, cols, rows, params);
     const diagSVG    = generateDiagLines(data, cols, rows, params);
 
@@ -856,14 +977,12 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
     const transforms = [`translate(${gx + skewShift},${gy})`];
     if (skewX !== 0) transforms.push(`skewX(${skewX})`);
     lines.push(`  <g id="glyph-${ch.codePointAt(0)}" transform="${transforms.join(' ')}">`);
-    const offLayer = generateOffLayer(data, cols, rows, params, '    ');
+    const offLayer = generateOffLayer(data, cols, rows, gp, '    ');
     if (offLayer) lines.push(offLayer);
-    if (glow.attr) lines.push(`    <g${glow.attr}>`);
     if (isNodes && outline) lines.push(`    <path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
     lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
     if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
     if (diagSVG) lines.push('    ' + diagSVG.trim());
-    if (glow.attr) lines.push(`    </g>`);
     lines.push(`  </g>`);
   });
 
