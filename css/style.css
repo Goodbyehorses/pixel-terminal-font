@@ -171,13 +171,6 @@ body {
   cursor: crosshair;
 }
 
-#segment-note {
-  margin-top: 10px;
-  max-width: 260px;
-  font-size: 11px;
-  color: var(--ui-muted);
-}
-
 .grid-cell {
   width: 32px;
   height: 32px;
@@ -926,7 +919,6 @@ body { grid-template-rows: 48px minmax(0, 1fr) auto auto; }
 #grid-editor:focus .grid-cell.focused { outline: 2px solid var(--ui-accent); box-shadow: inset 0 0 0 4px #111; }
 button:focus-visible, input:focus-visible, #grid-editor:focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 3px; }
 .control-hint, #autosave-status { font-size: 11px; color: var(--ui-muted); max-width: 340px; }
-.segment-grid { opacity: .55; }
 .param-row input[type="range"], input[type="range"] { min-height: 24px; }
 .presets-grid, .char-style-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .preset-btn { white-space: normal; overflow: visible; text-overflow: clip; overflow-wrap: anywhere; }

@@ -207,9 +207,6 @@ function generateNodesGeometry(data, cols, rows, params) {
  * @returns {string}       SVG path data (d attribute value)
  */
 function generateGlyphPath(data, cols, rows, params) {
-  if (SEGMENT_SHAPES.includes(params.cellShape)) {
-    return generateSegmentPath(params._char, cols, rows, params, !!params._isolated);
-  }
   if (params.cellShape === 'nodes' && !params._isolated) {
     return generateNodesGeometry(data, cols, rows, params);
   }
@@ -427,120 +424,8 @@ function generateGlyphPath(data, cols, rows, params) {
   return parts.join(' ');
 }
 
-// ─────────────────────────────────────────────
-//  Segment displays (7- and 16-segment)
-// ─────────────────────────────────────────────
-
-const SEGMENT_SHAPES = ['seg7', 'seg16'];
-
-// 7-segment: a top, b upper-right, c lower-right, d bottom, e lower-left,
-// f upper-left, g middle. Letters are the usual display compromises.
-const SEG7_MAP = {
-  '0': 'abcdef', '1': 'bc', '2': 'abdeg', '3': 'abcdg', '4': 'bcfg',
-  '5': 'acdfg', '6': 'acdefg', '7': 'abc', '8': 'abcdefg', '9': 'abcdfg',
-  A: 'abcefg', B: 'cdefg', C: 'adef', D: 'bcdeg', E: 'adefg', F: 'aefg',
-  G: 'acdef', H: 'bcefg', I: 'ef', J: 'bcde', K: 'acefg', L: 'def',
-  M: 'abcef', N: 'ceg', O: 'abcdef', P: 'abefg', Q: 'abcfg', R: 'eg',
-  S: 'acdfg', T: 'defg', U: 'bcdef', V: 'cde', W: 'bdf', X: 'bcefg',
-  Y: 'bcdfg', Z: 'abdeg',
-  '-': 'g', '_': 'd', '=': 'dg', "'": 'f', '"': 'bf', '[': 'adef', ']': 'abcd',
-  '(': 'adef', ')': 'abcd', '?': 'abeg', '!': 'bc', '|': 'ef', '^': 'abf', '°': 'abfg',
-};
-
-// 16-segment: a1/a2 top halves, b/c right, d1/d2 bottom halves, e/f left,
-// g1/g2 middle halves, i/l centre verticals, h/j/k/m diagonals (TL, TR, BL, BR).
-const SEG16_MAP = {
-  '0': 'a1 a2 b c d1 d2 e f j k', '1': 'b c j', '2': 'a1 a2 b g1 g2 e d1 d2',
-  '3': 'a1 a2 b c d1 d2 g2', '4': 'f g1 g2 b c', '5': 'a1 a2 f g1 g2 c d1 d2',
-  '6': 'a1 a2 f e d1 d2 c g1 g2', '7': 'a1 a2 b c', '8': 'a1 a2 b c d1 d2 e f g1 g2',
-  '9': 'a1 a2 b c d1 d2 f g1 g2',
-  A: 'a1 a2 b c e f g1 g2', B: 'a1 a2 b c d1 d2 g2 i l', C: 'a1 a2 f e d1 d2',
-  D: 'a1 a2 b c d1 d2 i l', E: 'a1 a2 f e d1 d2 g1', F: 'a1 a2 f e g1',
-  G: 'a1 a2 f e d1 d2 c g2', H: 'f e b c g1 g2', I: 'a1 a2 i l d1 d2',
-  J: 'b c d1 d2 e', K: 'f e g1 j m', L: 'f e d1 d2', M: 'f e b c h j',
-  N: 'f e b c h m', O: 'a1 a2 b c d1 d2 e f', P: 'a1 a2 b f e g1 g2',
-  Q: 'a1 a2 b c d1 d2 e f m', R: 'a1 a2 b f e g1 g2 m', S: 'a1 a2 f g1 g2 c d1 d2',
-  T: 'a1 a2 i l', U: 'f e d1 d2 c b', V: 'f e k j', W: 'f e c b k m',
-  X: 'h j k m', Y: 'h j l', Z: 'a1 a2 j k d1 d2',
-  '-': 'g1 g2', '_': 'd1 d2', '+': 'g1 g2 i l', '*': 'g1 g2 h i j k l m',
-  '/': 'j k', '\\': 'h m', '=': 'g1 g2 d1 d2', '|': 'i l', '(': 'j m', ')': 'h k',
-  '<': 'j m', '>': 'h k', "'": 'i', '"': 'f i', '!': 'i', '?': 'a1 a2 b g2 l',
-  '[': 'a2 i l d2', ']': 'a1 i l d1', '$': 'a1 a2 f g1 g2 c d1 d2 i l',
-  '%': 'a1 f g1 i j k l g2 c d2', '@': 'a1 a2 b c d1 d2 e g2 i', '#': 'b c g1 g2 i l d1 d2',
-  '^': 'k m', ',': 'k', '.': 'd1', ':': 'i l',
-  'Å': 'a1 a2 b c e f g1 g2', 'Ä': 'a1 a2 b c e f g1 g2', 'Ö': 'a1 a2 b c d1 d2 e f',
-};
-
-/**
- * Segment display glyph path. The glyph box is the full pixel-glyph box, so cell
- * size / gap / grid still set the overall size. Thickness comes from shapeWeight.
- * unlit=true returns the segments that are OFF (for the Unlit Pixels layer).
- */
-function generateSegmentPath(ch, cols, rows, params, unlit) {
-  const { cellWidth, cellHeight } = params;
-  const { gapX, gapY } = resolveGaps(params);
-  const W = cols * (cellWidth + gapX) - gapX;
-  const H = rows * (cellHeight + gapY) - gapY;
-  const weight = Math.min(0.95, Math.max(0.05, (params.shapeWeight ?? 50) / 100));
-  const t = Math.max(1, Math.min(W, H) * 0.35 * weight);   // segment thickness
-  const g = Math.max(0.5, t * 0.12);                       // gap between segments
-  const h = t / 2;
-
-  const is16 = params.cellShape === 'seg16';
-  const map  = is16 ? SEG16_MAP : SEG7_MAP;
-  const key  = ch == null ? '' : (map[ch] != null ? ch : ch.toUpperCase());
-  const spec = map[key] || '';
-  const lit  = new Set(is16 ? spec.split(' ').filter(Boolean) : spec.split(''));
-
-  const L = h, R = W - h, T = h, B = H - h, M = H / 2, C = W / 2;
-  const hSeg = (x0, x1, y) => [
-    [x0 + g, y], [x0 + g + h, y - h], [x1 - g - h, y - h],
-    [x1 - g, y], [x1 - g - h, y + h], [x0 + g + h, y + h],
-  ];
-  const vSeg = (x, y0, y1) => [
-    [x, y0 + g], [x + h, y0 + g + h], [x + h, y1 - g - h],
-    [x, y1 - g], [x - h, y1 - g - h], [x - h, y0 + g + h],
-  ];
-  // Diagonal bar between two points, trimmed at both ends so it clears the frame.
-  const dSeg = (x0, y0, x1, y1) => {
-    const len = Math.hypot(x1 - x0, y1 - y0);
-    const ux = (x1 - x0) / len, uy = (y1 - y0) / len;
-    const trim = g + t * 0.9;
-    const ax = x0 + ux * trim, ay = y0 + uy * trim;
-    const bx = x1 - ux * trim, by = y1 - uy * trim;
-    const nx = -uy * h * 0.8, ny = ux * h * 0.8;
-    return [[ax + nx, ay + ny], [bx + nx, by + ny], [bx - nx, by - ny], [ax - nx, ay - ny]];
-  };
-
-  const segs = is16 ? {
-    a1: hSeg(L, C, T), a2: hSeg(C, R, T), d1: hSeg(L, C, B), d2: hSeg(C, R, B),
-    g1: hSeg(L, C, M), g2: hSeg(C, R, M),
-    f: vSeg(L, T, M), b: vSeg(R, T, M), e: vSeg(L, M, B), c: vSeg(R, M, B),
-    i: vSeg(C, T, M), l: vSeg(C, M, B),
-    h: dSeg(L, T, C, M), j: dSeg(R, T, C, M), k: dSeg(L, B, C, M), m: dSeg(R, B, C, M),
-  } : {
-    a: hSeg(L, R, T), g: hSeg(L, R, M), d: hSeg(L, R, B),
-    f: vSeg(L, T, M), b: vSeg(R, T, M), e: vSeg(L, M, B), c: vSeg(R, M, B),
-  };
-
-  // Keep every polygon clockwise so overlaps never cancel under nonzero fill.
-  const cw = (pts) => {
-    let a = 0;
-    for (let n = 0; n < pts.length; n++) {
-      const [x1, y1] = pts[n], [x2, y2] = pts[(n + 1) % pts.length];
-      a += x1 * y2 - x2 * y1;
-    }
-    return a < 0 ? [...pts].reverse() : pts;
-  };
-
-  return Object.entries(segs)
-    .filter(([name]) => lit.has(name) !== unlit)
-    .map(([, pts]) => polygonSubpath(cw(pts)))
-    .join(' ');
-}
-
 // Shapes without solid orthogonal joins — inner fillets would just punch holes.
-const NO_FILLET_SHAPES = ['circle', 'diamond', 'hexagon', 'ring', 'plus', 'diagonal', 'halftone', 'tile', 'open', 'dash', 'seg7', 'seg16'];
+const NO_FILLET_SHAPES = ['circle', 'diamond', 'hexagon', 'ring', 'plus', 'diagonal', 'halftone', 'tile', 'open', 'dash'];
 
 /**
  * Unlit-pixel layer: every OFF cell drawn alone in offColor (LED / dot-matrix look).
@@ -683,7 +568,7 @@ function generateInnerFilletPath(data, cols, rows, params) {
 function generateDiagLines(data, cols, rows, params) {
   const { cellWidth, cellHeight, diagFill, diagWidth = 8, fgColor = '#ffffff' } = params;
   const { gapX, gapY } = resolveGaps(params);
-  if (!diagFill || diagWidth <= 0 || params.cellShape === 'nodes' || SEGMENT_SHAPES.includes(params.cellShape)) return '';
+  if (!diagFill || diagWidth <= 0 || params.cellShape === 'nodes') return '';
 
   const stepX = cellWidth + gapX;
   const stepY = cellHeight + gapY;
@@ -742,7 +627,6 @@ function glyphDimensions(cols, rows, params) {
  * Supports skewX (italic slant).
  */
 function generateGlyphSVG(data, cols, rows, params, ch) {
-  params = { ...params, _char: ch };  // segment shapes draw from the character, not pixels
   const { fgColor = '#ffffff', bgColor = '#000000', padding = 0 } = params;
   const { gapX, gapY } = resolveGaps(params);
   const { w, h } = glyphDimensions(cols, rows, params);
@@ -946,7 +830,6 @@ function escapeSVGAttribute(value) {
 // Shared by single glyph, text and sprite rendering. IDs survive multiple inline SVGs.
 let glyphMaskCounter = 0;
 function renderGlyphGroup(data, cols, rows, params, ch, transform) {
-  params = { ...params, _char: ch };
   const fgColor = escapeSVGAttribute(params.fgColor || '#ffffff');
   const outlineColor = escapeSVGAttribute(params.outlineColor || params.fgColor || '#ffffff');
   const outlineW = Math.max(1, params.outlineWidth ?? 3);
@@ -1047,7 +930,7 @@ function sanitizeStyle(saved, fallback) {
     padding: [0, 40], diagWidth: [1, 80], outlineWidth: [1, 20], charSpacing: [0, 120],
     skewX: [-30, 30], dotSize: [10, 100], shapeWeight: [5, 95],
   };
-  const shapes = ['rect', 'nodes', 'circle', 'horizontal', 'vertical', 'pixel', 'diamond', 'hexagon', 'ring', 'plus', 'diagonal', 'halftone', 'open', 'dash', 'tile', 'slope', 'seg7', 'seg16'];
+  const shapes = ['rect', 'nodes', 'circle', 'horizontal', 'vertical', 'pixel', 'diamond', 'hexagon', 'ring', 'plus', 'diagonal', 'halftone', 'open', 'dash', 'tile', 'slope'];
   const params = {};
   for (const [key, value] of Object.entries(saved.params)) {
     if (Object.hasOwn(ranges, key) && typeof value === 'number' && Number.isFinite(value)) {
