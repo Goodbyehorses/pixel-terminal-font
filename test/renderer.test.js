@@ -35,13 +35,6 @@ test('generateGlyphPath returns path data for A in pixel cell shapes', () => {
   }
 });
 
-test('generateGlyphPath returns path data for A in segment shapes', () => {
-  for (const cellShape of ['seg7', 'seg16']) {
-    const d = g.generateGlyphPath(A, COLS, ROWS, baseParams({ cellShape, _char: 'A' }));
-    assert.ok(d.trim().length > 0, `${cellShape}: empty path`);
-  }
-});
-
 test('generateGlyphPath returns empty path data for an all-zero glyph', () => {
   for (const cellShape of PIXEL_SHAPES) {
     const d = g.generateGlyphPath(BLANK, COLS, ROWS, baseParams({ cellShape }));
@@ -69,8 +62,7 @@ test('generateGlyphSVG output is well-formed', () => {
     baseParams({ cellShape: 'circle', skewX: -12, padding: 6 }),
     baseParams({ cellShape: 'nodes', outline: true, outlineWidth: 2 }),
     baseParams({ outline: true, outlineColor: '#ff0000', bgColor: 'transparent' }),
-    baseParams({ cellShape: 'seg7' }),
-    baseParams({ cellShape: 'seg16', showOff: true }),
+    baseParams({ cellShape: 'ring', showOff: true, shapeWeight: 45 }),
     baseParams({ showOff: true, diagFill: true, diagWidth: 6 }),
   ];
   for (const params of variants) {
@@ -113,28 +105,3 @@ test('glyphDimensions adds skew extra width (sign-independent)', () => {
   }
   assert.equal(g.skewExtraWidth(0, contentH), 0);
 });
-
-function subpaths(d) {
-  return d.split(/(?=M )/).map((s) => s.trim()).filter(Boolean);
-}
-
-for (const [shape, map, count] of [['seg7', 'SEG7_MAP', 7], ['seg16', 'SEG16_MAP', 16]]) {
-  test(`generateSegmentPath lit/unlit partition all segments (${shape})`, () => {
-    const params = baseParams({ cellShape: shape });
-    const chars = [...Object.keys(g[map]), 'a', ' ', '~'];
-    for (const ch of chars) {
-      const lit = subpaths(g.generateSegmentPath(ch, COLS, ROWS, params, false));
-      const unlit = subpaths(g.generateSegmentPath(ch, COLS, ROWS, params, true));
-      assert.equal(lit.length + unlit.length, count, `${shape} ${JSON.stringify(ch)}`);
-      const all = new Set([...lit, ...unlit]);
-      assert.equal(all.size, count, `${shape} ${JSON.stringify(ch)}: lit and unlit overlap`);
-    }
-    // '8' lights every seg7 segment.
-    if (shape === 'seg7') {
-      assert.equal(g.generateSegmentPath('8', COLS, ROWS, params, true), '');
-    }
-    // Unknown characters light nothing.
-    assert.equal(g.generateSegmentPath('~', COLS, ROWS, params, false), '');
-    assert.equal(subpaths(g.generateSegmentPath(null, COLS, ROWS, params, true)).length, count);
-  });
-}

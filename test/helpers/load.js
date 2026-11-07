@@ -13,8 +13,7 @@ const ROOT = path.join(__dirname, '..', '..');
 const FILES = ['js/font-data.js', 'js/renderer.js'];
 const EXPORTS = [
   'FONT_COLS', 'FONT_ROWS', 'FONT_DATA', 'FONT_MAPS', 'CHAR_STYLES', 'bestFontSource',
-  'SEGMENT_SHAPES', 'SEG7_MAP', 'SEG16_MAP',
-  'generateGlyphPath', 'generateGlyphSVG', 'generateSegmentPath', 'glyphDimensions',
+  'generateGlyphPath', 'generateGlyphSVG', 'glyphDimensions',
   'skewExtraWidth', 'resolveGaps',
 ];
 

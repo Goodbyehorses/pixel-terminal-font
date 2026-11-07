@@ -220,6 +220,8 @@ function loadAutosave() {
     if (typeof params[key] === typeof def) restoredParams[key] = params[key];
   }
 
+  // Shapes that no longer exist (e.g. the removed 7/16-segment displays) fall back to rect.
+  if (restoredParams.cellShape && !CELL_SHAPES.some(([k]) => k === restoredParams.cellShape)) restoredParams.cellShape = 'rect';
   Object.assign(state.params, restoredParams);
   // Chars missing from the save get the built-in glyph scaled to the saved grid
   const src = bestFontSource(cols, rows);
@@ -843,13 +845,31 @@ const DEFAULT_STYLES = [
     params: { cellWidth: 36, cellHeight: 36, gapX: 2, gapY: 2, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'circle',     cornerMerge: true, skewX: 0, dotSize: 60, showOff: true },
   },
   {
-    name: '7-Segment',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'seg7',       cornerMerge: true, skewX: -6, showOff: true },
+    name: 'Wireframe',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0, gapY: 0, cornerRadius: 4,  innerRadius: 0, bridgeRadius: 0, diagWidth: 9,  cellShape: 'rect',       cornerMerge: true, skewX: 0, dotSize: 22, diagFill: true },
   },
   {
-    name: '16-Segment',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 3, gapY: 3, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'seg16',      cornerMerge: true, skewX: 0, showOff: true, shapeWeight: 35 },
+    name: 'Nixie',
+    params: { cellWidth: 26, cellHeight: 48, gapX: 0, gapY: 0, cornerRadius: 12, innerRadius: 0, bridgeRadius: 0, diagWidth: 12, cellShape: 'rect',       cornerMerge: true, skewX: 0, dotSize: 45, diagFill: true, showOff: true },
   },
+  {
+    name: 'Pegboard',
+    params: { cellWidth: 34, cellHeight: 34, gapX: 6, gapY: 6, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'ring',       cornerMerge: true, skewX: 0, shapeWeight: 45, showOff: true },
+  },
+  {
+    name: 'Speed',
+    params: { cellWidth: 48, cellHeight: 36, gapX: 0, gapY: 0, cornerRadius: 14, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'slope',      cornerMerge: true, skewX: -14, outline: true, outlineWidth: 3 },
+  },
+  {
+    name: 'StitchGrid',
+    params: { cellWidth: 36, cellHeight: 36, gapX: 8, gapY: 8, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'plus',       cornerMerge: true, skewX: 0, shapeWeight: 18, showOff: true },
+  },
+];
+
+const CELL_SHAPES = [
+    ['rect','Rect'],['circle','Circle'],['nodes','Nodes'],['horizontal','Horizontal'],['vertical','Vertical'],['pixel','Pixel'],
+    ['diamond','Diamond'],['ring','Ring'],['plus','Cross'],['hexagon','Hexagon'],['diagonal','Diagonal'],['halftone','Halftone'],
+    ['slope','Slope'],['tile','Tile'],['open','Open'],['dash','Dash'],
 ];
 
 // Params presets don't always list — reset so one preset's effect doesn't leak into the next.
@@ -962,11 +982,7 @@ function buildParamControls() {
   const shapeGrid = document.createElement('div');
   shapeGrid.className = 'presets-grid char-style-grid';
 
-  for (const [shape, label] of [
-    ['rect','Rect'],['circle','Circle'],['nodes','Nodes'],['horizontal','Horizontal'],['vertical','Vertical'],['pixel','Pixel'],
-    ['diamond','Diamond'],['ring','Ring'],['plus','Cross'],['hexagon','Hexagon'],['diagonal','Diagonal'],['halftone','Halftone'],
-    ['slope','Slope'],['tile','Tile'],['open','Open'],['dash','Dash'],['seg7','7-Seg'],['seg16','16-Seg'],
-  ]) {
+  for (const [shape, label] of CELL_SHAPES) {
     const btn = document.createElement('button');
     btn.className = 'preset-btn cell-shape-btn';
     btn.dataset.shape = shape;
@@ -1856,7 +1872,7 @@ function updateConditionalParams() {
 
   // shapeWeight only drives ring / plus / diagonal; offColor only with showOff
   const weightRow = document.querySelector('.param-row[data-param-key="shapeWeight"]');
-  if (weightRow) weightRow.style.display = ['ring', 'plus', 'diagonal', 'open', 'dash', 'seg7', 'seg16'].includes(state.params.cellShape) ? '' : 'none';
+  if (weightRow) weightRow.style.display = ['ring', 'plus', 'diagonal', 'open', 'dash'].includes(state.params.cellShape) ? '' : 'none';
   const offRow = document.querySelector('.param-row[data-param-key="offColor"]');
   if (offRow) offRow.style.display = state.params.showOff ? '' : 'none';
 
@@ -1866,9 +1882,6 @@ function updateConditionalParams() {
     const row = document.querySelector(`[data-param-key="${key}"]`);
     if (row) row.style.display = show ? '' : 'none';
   }
-  document.getElementById('grid-editor').classList.toggle('segment-grid', ['seg7','seg16'].includes(shape));
-  const segNote = document.getElementById('segment-note');
-  if (segNote) segNote.hidden = !['seg7', 'seg16'].includes(state.params.cellShape);
 }
 
 function buildStylesUI() {
