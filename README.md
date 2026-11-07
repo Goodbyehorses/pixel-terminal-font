@@ -11,7 +11,7 @@ A browser-based pixel font editor for designing and exporting custom bitmap/vect
 - **Type tester** — type sample text to preview the full font in context
 - **Font preview strip** — shows all glyphs at once
 - **Character styles** — Classic, Square, Curved, Modular, Serif, Bold, Condensed (4×7), Italic, Stencil, LCD (5×8 with descenders)
-- **Style presets** — one-click styles (Rounded, Dots, Italic, Outlined, LED, Diamond, Rings, Honeycomb, Halftone, Slope, Mosaic, LCD, Open, Dashed, Fine, Pinpoint, Wireframe, Nixie, Pegboard, Speed, StitchGrid, etc.)
+- **Style presets** — one-click styles (Rounded, Dots, Italic, Outlined, LED, Diamond, Rings, Honeycomb, Halftone, Slope, Mosaic, LCD, Open, Dashed, Fine, Pinpoint, Wireframe, Nixie, Pegboard, Speed, StitchGrid, Voxel Cloud, Holo Slice, etc.)
 - **Cell shapes** — rect, circle, nodes, horizontal/vertical bars, pixel, diamond, ring, cross, hexagon, diagonal stripes, halftone, slope, tile, open square, dash
 - **Per-parameter controls** — grid cols/rows, cell size, horizontal/vertical gap, corner radius, inner radius, bridge radius, merge corners, diagonal fill, skew, outline width, dot size, shape weight, unlit pixels, colors, padding, char spacing
 - **Undo / Redo** — up to 60 steps covering pixel edits and all parameter changes (Ctrl+Z / Ctrl+Shift+Z or Ctrl+Y)
