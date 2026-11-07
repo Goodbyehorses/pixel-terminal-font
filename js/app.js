@@ -721,7 +721,7 @@ const DEFAULT_STYLES = [
   },
   {
     name: 'Pills',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 4,  gapY: 4,  cornerRadius: 20, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',   cornerMerge: false, skewX: 0 },
+    params: { cellWidth: 40, cellHeight: 40, gapX: 4,  gapY: 4,  cornerRadius: 20, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',   cornerMerge: true,  skewX: 0 },
   },
   {
     name: 'Wide',
@@ -749,15 +749,15 @@ const DEFAULT_STYLES = [
   },
   {
     name: 'Letterpress',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 3,  gapY: 3,  cornerRadius: 12, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',   cornerMerge: true,  skewX: 0 },
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0,  gapY: 0,  cornerRadius: 6,  innerRadius: 0, bridgeRadius: 0, diagWidth: 18, cellShape: 'rect',   cornerMerge: true,  skewX: 0, diagFill: true },
   },
   {
     name: 'Smooth',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 3,  gapY: 3,  cornerRadius: 16, innerRadius: 8, bridgeRadius: 3, diagWidth: 14, cellShape: 'rect',   cornerMerge: false, skewX: 0 },
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0,  gapY: 0,  cornerRadius: 12, innerRadius: 0, bridgeRadius: 0, diagWidth: 24, cellShape: 'rect',   cornerMerge: true,  skewX: 0, diagFill: true },
   },
   {
     name: 'Blob',
-    params: { cellWidth: 40, cellHeight: 40, gapX: 0,  gapY: 0,  cornerRadius: 20, innerRadius: 14, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',  cornerMerge: false, skewX: 0 },
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0,  gapY: 0,  cornerRadius: 20, innerRadius: 0, bridgeRadius: 0, diagWidth: 40, cellShape: 'rect',   cornerMerge: true,  skewX: 0, diagFill: true },
   },
   {
     name: 'Scanline',
@@ -842,7 +842,7 @@ const DEFAULT_STYLES = [
 ];
 
 // Params presets don't always list — reset so one preset's effect doesn't leak into the next.
-const PRESET_RESETS = { outline: false, shapeWeight: 50, showOff: false, dotSize: 100 };
+const PRESET_RESETS = { outline: false, shapeWeight: 50, showOff: false, dotSize: 100, diagFill: false };
 
 const PARAM_DEFS = [
   { key: 'cellWidth',    label: 'Cell Width',     min: 6,  max: 120, step: 1, type: 'range',    hint: 'Pixel width of each grid cell' },
