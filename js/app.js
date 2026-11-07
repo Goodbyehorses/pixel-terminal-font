@@ -37,6 +37,7 @@ function glyphSnapshot() {
 }
 
 function restoreSnapshot(snap) {
+  clearPreset();
   for (const [k, v] of Object.entries(snap.glyphs)) state.glyphs[k] = v;
   Object.assign(state.params, snap.params);
   syncParamControls();   // also sets --fg/--bg and syncs shape buttons
@@ -149,7 +150,7 @@ function init() {
   buildStylesUI();
   buildGridEditor();
   buildTypeTester();
-  if (restored) setActiveCharStyle(restored.charStyle);
+  if (restored) { setActiveCharStyle(restored.charStyle); showToast('Restored your last session'); }
   render();
   selectChar(restored ? state.currentChar : 'A');
 }
@@ -173,11 +174,13 @@ function writeAutosave() {
       currentChar: state.currentChar,
       charStyle: activeCharStyleName(),
     }));
-  } catch { /* storage full / unavailable — ignore */ }
+    setSaveStatus('Saved on this device');
+  } catch { setSaveStatus('Could not save on this device'); }
 }
 
 function scheduleAutosave() {
   clearTimeout(autosaveTimer);
+  setSaveStatus('Saving…');
   autosaveTimer = setTimeout(writeAutosave, AUTOSAVE_DELAY);
 }
 
@@ -339,9 +342,12 @@ function buildGridEditor() {
       }
 
       if (r === focusedCell.r && c === focusedCell.c) cell.classList.add('focused');
-      editor.appendChild(cell);
+      let row = editor.querySelector(`[data-grid-row="${r}"]`);
+      if (!row) { row = document.createElement('div'); row.dataset.gridRow = r; row.setAttribute('role', 'row'); row.style.display = 'contents'; editor.appendChild(row); }
+      row.appendChild(cell);
     }
   }
+  syncGridAccessibility();
 }
 
 function setCellFocus(r, c) {
@@ -353,6 +359,7 @@ function setCellFocus(r, c) {
   focusedCell = { r, c };
   const next = document.querySelector(`#grid-editor .grid-cell[data-r="${r}"][data-c="${c}"]`);
   if (next) next.classList.add('focused');
+  syncGridAccessibility();
 }
 
 function toggleCellAt(r, c, value) {
@@ -380,6 +387,7 @@ function toggleCellAt(r, c, value) {
       }
     }
   }
+  syncGridAccessibility();
   renderEditorPreview();
   renderPreviewStrip(state.currentChar);
   scheduleTypeTester();
@@ -476,6 +484,7 @@ function applyTransform(fn) {
   const { cols, rows } = state.params;
   state.glyphs[state.currentChar] = fn(state.glyphs[state.currentChar], cols, rows);
   buildGridEditor();
+  syncGridAccessibility();
   renderEditorPreview();
   renderPreviewStrip(state.currentChar);
   scheduleTypeTester();
@@ -593,6 +602,7 @@ function pasteCurrentChar() {
     ? [...clipboard]
     : scaleGlyph(clipboard, clipboardCols, clipboardRows, cols, rows);
   buildGridEditor();
+  syncGridAccessibility();
   renderEditorPreview();
   renderPreviewStrip(state.currentChar);
   scheduleTypeTester();
@@ -614,6 +624,7 @@ function buildEditorToolbar() {
     const b = document.createElement('button');
     b.textContent = label;
     b.title = title;
+    b.setAttribute('aria-label', title);
     b.className = 'tool-btn';
     b.addEventListener('click', onClick);
     return b;
@@ -863,11 +874,11 @@ const PARAM_DEFS = [
   { key: 'outlineWidth', label: 'Outline Width',  min: 1,   max: 20,  step: 1, type: 'range',    hint: 'Outline stroke thickness' },
   { key: 'outlineColor', label: 'Outline Color',                                type: 'color',    hint: 'Color of the outline stroke' },
   { key: 'charSpacing', label: 'Char Spacing',     min: 0, max: 120, step: 1, type: 'range',    hint: 'Extra horizontal space between characters in the type tester' },
-  { key: 'cornerMerge',    label: 'Merge Corners',    type: 'checkbox', hint: 'Flatten corners where adjacent cells meet (smoother connected strokes)' },
+  { key: 'cornerMerge',    label: 'Join corners',    type: 'checkbox', hint: 'Flatten corners where adjacent cells meet (smoother connected strokes)' },
   { key: 'lockNodeRadius', label: 'Lock Node Radius', type: 'checkbox', hint: 'Lock circular node to half the smallest cell side (matches prototype). Only applies to Nodes shape.' },
   { key: 'skewX',        label: 'Skew',           min: -30, max: 30,  step: 1, type: 'range',    hint: 'Italic slant angle in degrees (pure vector transform, exports correctly)' },
-  { key: 'dotSize',      label: 'Dot Size',       min: 10,  max: 100, step: 1, type: 'range',    hint: 'Draw each pixel at this % of its cell — thins joined strokes, shrinks separate dots' },
-  { key: 'shapeWeight',  label: 'Shape Weight',   min: 5,   max: 95,  step: 1, type: 'range',    hint: 'Ring thickness, cross arm width or stripe width (% of cell)' },
+  { key: 'dotSize',      label: 'Pixel fill %',       min: 10,  max: 100, step: 1, type: 'range',    hint: 'Draw each pixel at this % of its cell — thins joined strokes, shrinks separate dots' },
+  { key: 'shapeWeight',  label: 'Stroke weight',   min: 5,   max: 95,  step: 1, type: 'range',    hint: 'Ring thickness, cross arm width or stripe width (% of cell)' },
   { key: 'showOff',      label: 'Unlit Pixels',                                 type: 'checkbox', hint: 'Draw OFF cells in a dim color (LED / dot-matrix board look)' },
   { key: 'offColor',     label: 'Unlit Color',                                  type: 'color',    hint: 'Color of the unlit (OFF) cells' },
 ];
@@ -875,11 +886,11 @@ const PARAM_DEFS = [
 const PARAM_GROUPS = [
   { label: 'Grid',     keys: ['cols', 'rows'],                                                   open: true  },
   { label: 'Cell',     keys: ['cellWidth', 'cellHeight', 'dotSize'],                                         open: true  },
-  { label: 'Gap',      keys: ['gapX', 'gapY'],                                                    open: true  },
-  { label: 'Rounding', keys: ['cornerRadius', 'cornerMerge', 'lockNodeRadius'],                    open: true  },
-  { label: 'Style',    keys: ['shapeWeight', 'diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX', 'showOff', 'offColor'], open: true  },
+  { label: 'Gap',      keys: ['gapX', 'gapY'],                                                    open: false  },
+  { label: 'Rounding', keys: ['cornerRadius', 'bridgeRadius', 'cornerMerge', 'lockNodeRadius'],                    open: false  },
+  { label: 'Style',    keys: ['shapeWeight', 'diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX', 'showOff', 'offColor'], open: false  },
   { label: 'Color',    keys: ['fgColor', 'bgColor'],                                              open: true  },
-  { label: 'Export',   keys: ['padding', 'charSpacing'],                                          open: false },
+  { label: 'Export',   keys: ['padding'],                                          open: false },
 ];
 
 function buildParamControls() {
@@ -892,7 +903,7 @@ function buildParamControls() {
 
   const charStyleLabel = document.createElement('div');
   charStyleLabel.className = 'presets-label';
-  charStyleLabel.textContent = 'Character Style';
+  charStyleLabel.textContent = 'Base Characters';
   charStyleSection.appendChild(charStyleLabel);
 
   const charStyleGrid = document.createElement('div');
@@ -908,6 +919,7 @@ function buildParamControls() {
     charStyleGrid.appendChild(btn);
   }
 
+  charStyleSection.appendChild(Object.assign(document.createElement('p'), {className: 'control-hint', textContent: 'Replaces all character drawings and may change the grid size.'}));
   charStyleSection.appendChild(charStyleGrid);
   panel.appendChild(charStyleSection);
 
@@ -927,7 +939,8 @@ function buildParamControls() {
     const btn = document.createElement('button');
     btn.className = 'preset-btn';
     btn.textContent = preset.name;
-    btn.title = Object.entries(preset.params)
+    btn.dataset.preset = preset.name;
+    btn.title = preset.name + '\n' + Object.entries(preset.params)
       .map(([k, v]) => `${k}: ${v}`)
       .join('\n');
     btn.addEventListener('click', () => applyPreset(preset));
@@ -970,10 +983,10 @@ function buildParamControls() {
     const section = document.createElement('div');
     section.className = 'param-section' + (group.open ? '' : ' collapsed');
 
-    const hdr = document.createElement('div');
+    const hdr = document.createElement('button');
     hdr.className = 'param-section-hdr';
     hdr.innerHTML = `<span class="param-section-label">${group.label}</span><span class="param-section-arrow">▾</span>`;
-    hdr.addEventListener('click', () => section.classList.toggle('collapsed'));
+    // Accordion behaviour is attached after all controls are built.
 
     const body = document.createElement('div');
     body.className = 'param-section-body';
@@ -1005,6 +1018,7 @@ function buildParamControls() {
 
         const numInput = document.createElement('input');
         numInput.type = 'number';
+        numInput.setAttribute('aria-label', def.label);
         numInput.className = 'param-num';
         numInput.dataset.key = def.key;
         numInput.min = def.min;
@@ -1066,6 +1080,11 @@ function buildParamControls() {
         });
 
         label.textContent = def.label;
+        if (def.hint) {
+          const hint = Object.assign(document.createElement('p'), {id: `hint-${def.key}`, className: 'control-hint', textContent: def.hint});
+          checkbox.setAttribute('aria-describedby', hint.id);
+          wrap.appendChild(hint);
+        }
         row.appendChild(checkbox);
         row.appendChild(label);
         wrap.appendChild(row);
@@ -1083,7 +1102,7 @@ function buildParamControls() {
   const defaultRow = document.createElement('div');
   defaultRow.className = 'param-row';
   const defaultBtn = document.createElement('button');
-  defaultBtn.textContent = 'Generate Default Characters';
+  defaultBtn.textContent = 'Regenerate characters';
   defaultBtn.className = 'primary';
   defaultBtn.style.width = '100%';
   defaultBtn.title = 'Scale the built-in 5×7 character set to the current grid dimensions';
@@ -1100,7 +1119,8 @@ function buildParamControls() {
   autoRow.className = 'param-row autoscale-row';
 
   const autoLabel = document.createElement('label');
-  autoLabel.textContent = 'Auto-size';
+  autoLabel.textContent = 'Auto-size height (px)';
+  autoLabel.htmlFor = 'autoscale-height';
   autoRow.appendChild(autoLabel);
 
   const autoControls = document.createElement('div');
@@ -1146,6 +1166,7 @@ function computeCharHeight() {
  * Uses a fixed 10% gap-to-cell ratio and 28% corner radius ratio.
  */
 function autoGenerate(targetHeight) {
+  clearPreset();
   const { cols, rows } = state.params;
 
   // Solve: targetHeight = rows * cellH + (rows-1) * gap,  gap = cellH * gapRatio
@@ -1176,6 +1197,7 @@ function autoGenerate(targetHeight) {
 
 function applyCharStyle(style) {
   saveUndo();
+  offerProjectUndo('Replaced base characters', undoStack[undoStack.length - 1]);
   const styleCols = style.cols ?? FONT_COLS;
   const styleRows = style.rows ?? FONT_ROWS;
   // While the grid is still some style's native size (user hasn't customised it),
@@ -1183,6 +1205,7 @@ function applyCharStyle(style) {
   const onNativeGrid = CHAR_STYLES.some(s =>
     (s.cols ?? FONT_COLS) === state.params.cols && (s.rows ?? FONT_ROWS) === state.params.rows);
   if (onNativeGrid) {
+    if (state.params.cols !== styleCols || state.params.rows !== styleRows) clearPreset();
     state.params.cols = styleCols;
     state.params.rows = styleRows;
     syncParamControls();
@@ -1209,6 +1232,7 @@ function applyCharStyle(style) {
 }
 
 function applyCellShape(shape) {
+  clearPreset();
   saveUndo();
   state.params.cellShape = shape;
   document.querySelectorAll('.cell-shape-btn').forEach(b => {
@@ -1229,8 +1253,10 @@ function applyCellShape(shape) {
 
 
 function applyPreset(preset) {
+  clearPreset();
   saveUndo();
   Object.assign(state.params, PRESET_RESETS, preset.params);
+  document.querySelectorAll('.preset-btn').forEach(b => { if (b.dataset.preset === preset.name) b.classList.add('active'); });
   if (preset.params.lockNodeRadius === undefined) state.params.lockNodeRadius = true;
   // Clamp cornerRadius to cell size
   const maxRad = Math.floor(Math.min(state.params.cellWidth, state.params.cellHeight) / 2);
@@ -1244,6 +1270,7 @@ function applyPreset(preset) {
 }
 
 function applyParam(key, value) {
+  clearPreset();
   const oldCols = state.params.cols;
   const oldRows = state.params.rows;
   state.params[key] = value;
@@ -1307,7 +1334,7 @@ function applyParam(key, value) {
 
   if (key === 'fgColor') document.documentElement.style.setProperty('--fg', value);
   if (key === 'bgColor') document.documentElement.style.setProperty('--bg', value);
-  if (key === 'outline' || key === 'showOff') updateConditionalParams();
+  updateConditionalParams();
 
   renderEditorPreview();
   renderPreviewStrip();
@@ -1368,6 +1395,8 @@ function render() {
 }
 
 function renderEditorPreview() {
+  syncGridAccessibility();
+  syncButtonStates();
   const { cols, rows } = state.params;
   const data = state.glyphs[state.currentChar];
   scheduleAutosave();   // every edit / param change / char switch passes through here
@@ -1399,7 +1428,8 @@ function renderPreviewStrip(onlyChar) {
     for (const char of group.chars) {
       const data = state.glyphs[char];
       if (!data) continue;
-      const cell = document.createElement('div');
+      const cell = document.createElement('button');
+      cell.setAttribute('aria-label', `Edit character ${char}`);
       cell.className = 'preview-char';
       cell.dataset.char = char;
       cell.title = char;
@@ -1425,9 +1455,10 @@ function buildTypeTester() {
   const bar = document.createElement('div');
   bar.className = 'type-tester-bar';
 
-  const label = document.createElement('span');
+  const label = document.createElement('label');
+  label.htmlFor = 'type-tester-input';
   label.className = 'type-tester-label';
-  label.textContent = 'Type Tester';
+  label.textContent = 'Text';
 
   const input = document.createElement('input');
   input.type = 'text';
@@ -1437,29 +1468,23 @@ function buildTypeTester() {
   input.value = 'HELLO WORLD';
   input.addEventListener('input', renderTypeTester);
 
-  const sizeLabel = document.createElement('span');
+  const sizeLabel = document.createElement('label');
+  sizeLabel.htmlFor = 'type-size';
   sizeLabel.className = 'type-tester-label';
   sizeLabel.textContent = 'Size';
 
   const sizeInput = document.createElement('input');
   sizeInput.type = 'range';
+  sizeInput.id = 'type-size';
   sizeInput.min = 30;
   sizeInput.max = 200;
   sizeInput.value = 60;
   sizeInput.title = 'Preview text size';
   sizeInput.style.cssText = 'width:72px;cursor:pointer;accent-color:var(--ui-accent);';
-  sizeInput.addEventListener('input', () => {
-    const preview = document.getElementById('type-tester-preview');
-    if (preview) {
-      const h = parseInt(sizeInput.value);
-      preview.style.maxHeight = (h + 16) + 'px';
-      const svg = preview.querySelector('svg');
-      if (svg) svg.style.maxHeight = h + 'px';
-    }
-  });
+  sizeInput.addEventListener('input', renderTypeTester);
 
   const exportBtn = document.createElement('button');
-  exportBtn.textContent = 'Export SVG';
+  exportBtn.textContent = 'Export text SVG';
   exportBtn.className = 'primary';
   exportBtn.addEventListener('click', exportTypeTester);
 
@@ -1495,6 +1520,10 @@ function renderTypeTester() {
   if (!input || !preview) return;
   const svg = generateTextSVG(state.glyphs, input.value, state.params);
   preview.innerHTML = svg || '';
+  const height = Number(document.getElementById('type-size')?.value || 60);
+  preview.style.height = `${height}px`;
+  const image = preview.querySelector('svg');
+  if (image) image.style.height = `${height}px`;
 }
 
 function exportTypeTester() {
@@ -1535,9 +1564,10 @@ function exportAll() {
 function exportCurrentPNG() {
   const { cols, rows } = state.params;
   const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params, state.currentChar);
-  const scale = parseInt(document.getElementById('png-scale')?.value) || 4;
-  downloadPNG(glyphFilename(state.currentChar, 'png'), svg, scale);
-  showToast(`Exported ${glyphFilename(state.currentChar, 'png')} ×${scale}`);
+  const scale = Math.max(1, Math.min(16, parseInt(document.getElementById('png-scale').value) || 4));
+  document.getElementById('png-scale').value = scale;
+  const filename = glyphFilename(state.currentChar, 'png');
+  downloadPNG(filename, svg, scale).then(() => showToast(`Exported ${filename} ×${scale}`)).catch(() => showToast('PNG rasterising failed', 0));
 }
 
 function exportSprite() {
@@ -1555,49 +1585,49 @@ function exportSprite() {
 //  Toast notifications
 // ─────────────────────────────────────────────
 
-function showToast(msg, duration = 2200) {
-  let container = document.getElementById('toast-container');
-  if (!container) {
-    container = document.createElement('div');
-    container.id = 'toast-container';
-    container.className = 'toast-container';
-    document.body.appendChild(container);
-  }
-  const toast = document.createElement('div');
-  toast.className = 'toast';
-  toast.textContent = msg;
+function showToast(msg, duration = 6000, action) {
+  const container = document.getElementById('toast-container');
+  const toast = Object.assign(document.createElement('div'), {className: 'toast', textContent: msg + ' '});
   container.appendChild(toast);
-  setTimeout(() => {
-    toast.classList.add('fade-out');
-    setTimeout(() => toast.remove(), 400);
-  }, duration);
+  if (action) {
+    const button = Object.assign(document.createElement('button'), {textContent: 'Undo'});
+    button.addEventListener('click', () => { action(); toast.remove(); });
+    toast.appendChild(button);
+  }
+  if (!duration) {
+    // Persistent (error) toasts need an explicit way to dismiss them.
+    const close = Object.assign(document.createElement('button'), {textContent: '×', className: 'toast-close'});
+    close.setAttribute('aria-label', 'Dismiss notification');
+    close.addEventListener('click', () => toast.remove());
+    toast.appendChild(close);
+  }
+  // Keep an actionable notification available while keyboard or pointer is inside it.
+  let timer;
+  const start = () => { if (duration) timer = setTimeout(() => toast.remove(), duration); };
+  toast.addEventListener('focusin', () => clearTimeout(timer));
+  toast.addEventListener('mouseenter', () => clearTimeout(timer));
+  toast.addEventListener('focusout', start);
+  toast.addEventListener('mouseleave', start);
+  start();
+}
+
+function setSaveStatus(text) {
+  const status = document.getElementById('autosave-status');
+  if (status) status.textContent = text;
+}
+function clearPreset() {
+  document.querySelectorAll('[data-preset]').forEach(b => b.classList.remove('active'));
 }
 
 function toggleTheme() {
   const isLight = document.documentElement.dataset.theme === 'light';
   const goingLight = !isLight;
   document.documentElement.dataset.theme = goingLight ? 'light' : '';
-  localStorage.setItem('pfg-theme', goingLight ? 'light' : '');
+  try { localStorage.setItem('pfg-theme', goingLight ? 'light' : ''); } catch {}
   const btn = document.getElementById('btn-theme');
   if (btn) btn.textContent = goingLight ? '☾' : '☀';
 
-  // Swap fg/bg colors when switching themes (if still at defaults)
-  const fg = state.params.fgColor;
-  const bg = state.params.bgColor;
-  const isDefaultDark = fg === '#ffffff' && bg === '#000000';
-  const isDefaultLight = fg === '#000000' && bg === '#ffffff';
-  if (isDefaultDark || isDefaultLight) {
-    state.params.fgColor = goingLight ? '#000000' : '#ffffff';
-    state.params.bgColor = goingLight ? '#ffffff' : '#000000';
-    document.documentElement.style.setProperty('--fg', state.params.fgColor);
-    document.documentElement.style.setProperty('--bg', state.params.bgColor);
-    // Update color inputs in param panel
-    const fgInput = document.getElementById('param-fgColor');
-    const bgInput = document.getElementById('param-bgColor');
-    if (fgInput) fgInput.value = state.params.fgColor;
-    if (bgInput) bgInput.value = state.params.bgColor;
-    render();
-  }
+
 }
 
 // ─────────────────────────────────────────────
@@ -1606,6 +1636,7 @@ function toggleTheme() {
 
 function resetCurrentChar() {
   saveUndo();
+  offerProjectUndo('Reset character', undoStack[undoStack.length - 1]);
   const { cols, rows } = state.params;
   const src = bestFontSource(cols, rows);
   const srcData = src.data[state.currentChar];
@@ -1622,6 +1653,7 @@ function resetCurrentChar() {
 
 function resetAll() {
   saveUndo();
+  offerProjectUndo('Regenerated characters', undoStack[undoStack.length - 1]);
   const { cols, rows } = state.params;
   const src = bestFontSource(cols, rows);
   for (const char of Object.keys(src.data)) {
@@ -1641,9 +1673,10 @@ function resetAll() {
  * which only regenerates glyphs for the current grid.)
  */
 function resetEverything() {
+  clearPreset();
   saveUndo();
-  const light = document.documentElement.dataset.theme === 'light';
-  Object.assign(state.params, DEFAULT_PARAMS, light ? { fgColor: '#000000', bgColor: '#ffffff' } : {});
+  offerProjectUndo('Reset project', undoStack[undoStack.length - 1]);
+  Object.assign(state.params, DEFAULT_PARAMS);
   state.glyphs = {};
   for (const char of Object.keys(FONT_DATA)) state.glyphs[char] = [...FONT_DATA[char]];
   syncParamControls();
@@ -1662,18 +1695,20 @@ function resetEverything() {
 const STYLES_KEY = 'pfg-styles';
 
 function readStyles() {
-  try { return JSON.parse(localStorage.getItem(STYLES_KEY)) || []; }
+  try { const styles = JSON.parse(localStorage.getItem(STYLES_KEY)); return Array.isArray(styles) ? styles : []; }
   catch { return []; }
 }
 
 function writeStyles(styles) {
-  localStorage.setItem(STYLES_KEY, JSON.stringify(styles));
+  try { localStorage.setItem(STYLES_KEY, JSON.stringify(styles)); return true; }
+  catch { showToast('Could not save styles on this device', 0); return false; }
 }
 
 function saveCurrentStyle(name) {
   name = name.trim();
   if (!name) return;
   const styles = readStyles();
+  const before = structuredClone(styles);
   const idx = styles.findIndex(s => s.name === name);
   const entry = {
     name,
@@ -1684,11 +1719,13 @@ function saveCurrentStyle(name) {
   };
   if (idx >= 0) styles[idx] = entry;
   else styles.push(entry);
-  writeStyles(styles);
+  if (!writeStyles(styles)) return;
   renderStylesList();
+  showToast(idx >= 0 ? 'Replaced saved style' : 'Saved style', 6000, () => restoreStyles(before));
 }
 
 function applyStyle(saved) {
+  clearPreset();
   saved = sanitizeStyle(saved, state.params);
   if (!saved) return;
   saveUndo();
@@ -1718,8 +1755,10 @@ function applyStyle(saved) {
 }
 
 function deleteStyle(name) {
-  writeStyles(readStyles().filter(s => s.name !== name));
+  const before = readStyles();
+  if (!writeStyles(before.filter(s => s.name !== name))) return;
   renderStylesList();
+  showToast('Deleted saved style', 6000, () => restoreStyles(before));
 }
 
 function exportStyles() {
@@ -1742,19 +1781,24 @@ function importStyles(file) {
   reader.onload = () => {
     try {
       const imported = JSON.parse(reader.result);
-      if (!Array.isArray(imported)) return;
+      if (!Array.isArray(imported)) throw new Error('Expected an array');
       const existing = readStyles();
+      const before = structuredClone(existing);
+      let count = 0;
       for (const candidate of imported) {
         const entry = sanitizeStyle(candidate, state.params);
         if (!entry || !entry.name) continue;
+        count++;
         const idx = existing.findIndex(s => s.name === entry.name);
         if (idx >= 0) existing[idx] = entry;
         else existing.push(entry);
       }
-      writeStyles(existing);
+      if (!writeStyles(existing)) return;
       renderStylesList();
-    } catch { /* invalid JSON — silently ignore */ }
+      showToast(`Imported ${count} styles, skipped ${imported.length - count}`, 6000, () => restoreStyles(before));
+    } catch { showToast('Could not import styles: invalid JSON or style data', 0); }
   };
+  reader.onerror = () => showToast('Could not read styles file', 0);
   reader.readAsText(file);
 }
 
@@ -1780,6 +1824,8 @@ function syncParamControls() {
   document.documentElement.style.setProperty('--fg', state.params.fgColor);
   document.documentElement.style.setProperty('--bg', state.params.bgColor);
   syncShapeButtons();
+  const spacing = document.getElementById('tester-spacing');
+  if (spacing) spacing.value = state.params.charSpacing;
 }
 
 function syncShapeButtons() {
@@ -1814,6 +1860,13 @@ function updateConditionalParams() {
   const offRow = document.querySelector('.param-row[data-param-key="offColor"]');
   if (offRow) offRow.style.display = state.params.showOff ? '' : 'none';
 
+  const shape = state.params.cellShape;
+  const visible = {cornerRadius: ['rect','tile','slope'].includes(shape) || (isNodes && !state.params.lockNodeRadius), cornerMerge: shape === 'rect', bridgeRadius: shape === 'rect', diagWidth: state.params.diagFill};
+  for (const [key, show] of Object.entries(visible)) {
+    const row = document.querySelector(`[data-param-key="${key}"]`);
+    if (row) row.style.display = show ? '' : 'none';
+  }
+  document.getElementById('grid-editor').classList.toggle('segment-grid', ['seg7','seg16'].includes(shape));
   const segNote = document.getElementById('segment-note');
   if (segNote) segNote.hidden = !['seg7', 'seg16'].includes(state.params.cellShape);
 }
@@ -1868,6 +1921,7 @@ function buildStylesUI() {
   importBtn.title = 'Load styles from a JSON file';
   const fileInput = document.createElement('input');
   fileInput.type = 'file';
+  fileInput.setAttribute('aria-label', 'Import saved styles JSON');
   fileInput.accept = '.json';
   fileInput.style.display = 'none';
   fileInput.addEventListener('change', () => {
@@ -1924,6 +1978,7 @@ function renderStylesList() {
     delBtn.textContent = '×';
     delBtn.className = 'style-delete';
     delBtn.title = 'Delete style';
+    delBtn.setAttribute('aria-label', `Delete style ${style.name}`);
     delBtn.addEventListener('click', () => deleteStyle(style.name));
 
     actions.appendChild(loadBtn);
@@ -1940,20 +1995,17 @@ function renderStylesList() {
 
 document.addEventListener('DOMContentLoaded', () => {
   // Restore theme preference
-  const savedTheme = localStorage.getItem('pfg-theme') || '';
+  let savedTheme = '';
+  try { savedTheme = localStorage.getItem('pfg-theme') || ''; } catch {}
   document.documentElement.dataset.theme = savedTheme;
   const themeBtn = document.getElementById('btn-theme');
   if (themeBtn) themeBtn.textContent = savedTheme === 'light' ? '☾' : '☀';
 
-  // If saved theme is light, pre-flip default colors
-  if (savedTheme === 'light') {
-    state.params.fgColor = '#000000';
-    state.params.bgColor = '#ffffff';
-  }
 
   init();
   buildEditorToolbar();
   initEditorEvents();
+  enhanceUI();
 
   document.getElementById('btn-export').addEventListener('click', exportCurrent);
   document.getElementById('btn-export-all').addEventListener('click', exportAll);
@@ -1984,3 +2036,113 @@ document.addEventListener('DOMContentLoaded', () => {
     else if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
   });
 });
+
+function offerProjectUndo(message, snapshot) {
+  showToast(message, 6000, () => {
+    saveUndo();
+    restoreSnapshot(snapshot);
+    clearPreset();
+    buildGridEditor();
+    render();
+  });
+}
+function restoreStyles(styles) {
+  if (writeStyles(styles)) renderStylesList();
+}
+
+// Single grid tab stop + aria-activedescendant: arrows move the active cell,
+// Space/Enter edits it. Row wrappers preserve the visual CSS grid geometry.
+function syncGridAccessibility() {
+  const editor = document.getElementById('grid-editor');
+  editor.setAttribute('role', 'grid');
+  editor.setAttribute('aria-label', `Pixel editor for ${state.currentChar}`);
+  editor.setAttribute('aria-describedby', 'editor-instructions');
+  editor.setAttribute('aria-rowcount', state.params.rows);
+  editor.setAttribute('aria-colcount', state.params.cols);
+  editor.querySelectorAll('.grid-cell').forEach(cell => {
+    const r = Number(cell.dataset.r), c = Number(cell.dataset.c);
+    cell.id = `pixel-${r}-${c}`;
+    cell.setAttribute('role', 'gridcell');
+    cell.setAttribute('aria-rowindex', r + 1);
+    cell.setAttribute('aria-colindex', c + 1);
+    cell.setAttribute('aria-label', `Row ${r + 1}, column ${c + 1}, ${cell.classList.contains('on') ? 'on' : 'off'}`);
+    cell.setAttribute('aria-selected', String(cell.classList.contains('on')));
+  });
+  editor.setAttribute('aria-activedescendant', `pixel-${focusedCell.r}-${focusedCell.c}`);
+}
+function syncButtonStates() {
+  document.querySelectorAll('.char-btn,.char-style-btn,.cell-shape-btn,[data-brush],#btn-symmetry,#btn-guides,[data-preset]').forEach(b => {
+    b.setAttribute('aria-pressed', String(b.classList.contains('active')));
+  });
+}
+function makeDisclosure(section, header, content, key, defaultOpen = true) {
+  let open = defaultOpen;
+  try { const saved = localStorage.getItem(`pfg-panel-${key}`); if (saved !== null) open = saved === 'true'; } catch {}
+  content.id ||= `panel-${key}`;
+  header.setAttribute('aria-controls', content.id);
+  const update = () => {
+    header.setAttribute('aria-expanded', String(open));
+    content.hidden = !open;
+    section.classList.toggle('collapsed', !open);
+  };
+  header.addEventListener('click', () => {
+    open = !open;
+    update();
+    try { localStorage.setItem(`pfg-panel-${key}`, String(open)); } catch {}
+  });
+  update();
+}
+function enhanceUI() {
+  document.querySelectorAll('.param-section').forEach((section, i) => {
+    makeDisclosure(section, section.querySelector('.param-section-hdr'), section.querySelector('.param-section-body'), `param-${i}`, PARAM_GROUPS[i].open);
+  });
+  document.querySelectorAll('.presets-section').forEach((section, i) => {
+    const label = section.querySelector('.presets-label');
+    const header = Object.assign(document.createElement('button'), {className: 'param-section-hdr', textContent: label.textContent});
+    label.replaceWith(header);
+    const content = document.createElement('div');
+    while (header.nextSibling) content.appendChild(header.nextSibling);
+    section.appendChild(content);
+    makeDisclosure(section, header, content, `catalogue-${i}`);
+  });
+  const swap = Object.assign(document.createElement('button'), {textContent: 'Swap colours'});
+  swap.addEventListener('click', () => {
+    saveUndo();
+    [state.params.fgColor, state.params.bgColor] = [state.params.bgColor, state.params.fgColor];
+    clearPreset(); syncParamControls(); render();
+  });
+  document.getElementById('param-bgColor').parentElement.after(swap);
+  const nameLabel = Object.assign(document.createElement('label'), {htmlFor: 'style-name-input', textContent: 'Style name'});
+  document.querySelector('.styles-save-row').before(nameLabel);
+  const spacing = document.createElement('label');
+  spacing.textContent = 'Char spacing ';
+  const spacingInput = Object.assign(document.createElement('input'), {type: 'number', min: '0', max: '120', value: state.params.charSpacing, id: 'tester-spacing', className: 'param-num'});
+  spacing.htmlFor = spacingInput.id;
+  spacingInput.addEventListener('change', () => { saveUndo(); applyParam('charSpacing', Math.max(0, Math.min(120, Number(spacingInput.value) || 0))); });
+  spacing.appendChild(spacingInput);
+  document.querySelector('.type-tester-bar').appendChild(spacing);
+  for (const [id, title, content] of [['type-tester', 'Type tester', null], ['preview-panel', 'Font preview', 'preview-strip']]) {
+    const section = document.getElementById(id);
+    const header = Object.assign(document.createElement('button'), {textContent: title, className: 'panel-toggle'});
+    const body = document.createElement('div');
+    body.className = 'panel-content';
+    if (content) body.appendChild(document.getElementById(content));
+    else while (section.firstChild) body.appendChild(section.firstChild);
+    if (content) document.getElementById('preview-header').remove();
+    section.prepend(header); section.appendChild(body);
+    makeDisclosure(section, header, body, id);
+  }
+  // Icon/abbreviated buttons get their tooltip as accessible name; preset tooltips list
+  // every param, so presets keep their visible name instead.
+  document.querySelectorAll('button').forEach(b => {
+    if (b.dataset.preset) b.setAttribute('aria-label', b.dataset.preset);
+    else if (b.title) b.setAttribute('aria-label', b.title);
+  });
+  document.getElementById('btn-theme').setAttribute('aria-label', 'Toggle interface light/dark theme');
+  document.querySelectorAll('.preset-btn').forEach(b => { if (!b.dataset.preset) b.title = b.textContent; });
+  syncButtonStates();
+  document.addEventListener('click', syncButtonStates);
+  document.addEventListener('keydown', () => queueMicrotask(syncButtonStates));
+  // Reflect class updates made by undo, keyboard edits and live drawing as well.
+  new MutationObserver(syncButtonStates).observe(document.getElementById('params-panel'), {subtree: true, attributes: true, attributeFilter: ['class']});
+}

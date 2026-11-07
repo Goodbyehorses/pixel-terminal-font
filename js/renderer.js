@@ -866,30 +866,31 @@ function downloadSVG(filename, svgString) {
  * scale: output pixel multiplier (e.g. 4 = 4× the SVG's natural pixel size).
  */
 function downloadPNG(filename, svgString, scale = 4) {
-  const img = new Image();
-  const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  img.onload = () => {
-    const canvas = document.createElement('canvas');
-    canvas.width  = Math.round(img.naturalWidth  * scale);
-    canvas.height = Math.round(img.naturalHeight * scale);
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
-    canvas.toBlob(pngBlob => {
-      const a = document.createElement('a');
-      if (!pngBlob) return;
-      const pngURL = URL.createObjectURL(pngBlob);
-      a.href = pngURL;
-      a.download = filename;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      URL.revokeObjectURL(pngURL);
-    }, 'image/png');
-    URL.revokeObjectURL(url);
-  };
-  img.onerror = () => URL.revokeObjectURL(url);
-  img.src = url;
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' }));
+    const fail = () => { URL.revokeObjectURL(url); reject(new Error('PNG rasterising failed')); };
+    img.onerror = fail;
+    img.onload = () => {
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = Math.round(img.naturalWidth * scale);
+        canvas.height = Math.round(img.naturalHeight * scale);
+        canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+        canvas.toBlob(blob => {
+          if (!blob) { fail(); return; }
+          const pngURL = URL.createObjectURL(blob);
+          const a = Object.assign(document.createElement('a'), {href: pngURL, download: filename});
+          document.body.appendChild(a);
+          a.click(); a.remove();
+          setTimeout(() => URL.revokeObjectURL(pngURL), 1000);
+          resolve();
+        }, 'image/png');
+        URL.revokeObjectURL(url);
+      } catch { fail(); }
+    };
+    img.src = url;
+  });
 }
 
 /**
