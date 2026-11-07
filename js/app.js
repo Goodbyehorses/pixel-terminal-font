@@ -1511,27 +1511,33 @@ function exportTypeTester() {
 function exportCurrent() {
   const { cols, rows } = state.params;
   const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params, state.currentChar);
-  downloadSVG(`${state.currentChar.toLowerCase()}.svg`, svg);
-  showToast(`Exported ${state.currentChar.toLowerCase()}.svg`);
+  downloadSVG(glyphFilename(state.currentChar), svg);
+  showToast(`Exported ${glyphFilename(state.currentChar)}`);
 }
 
 function exportAll() {
   const { cols, rows } = state.params;
-  let count = 0;
-  for (const char of Object.keys(state.glyphs)) {
-    const svg = generateGlyphSVG(state.glyphs[char], cols, rows, state.params, char);
-    downloadSVG(`${char.toLowerCase()}.svg`, svg);
-    count++;
-  }
-  showToast(`Exported ${count} glyphs`);
+  const entries = Object.keys(state.glyphs).map(char => ({
+    name: glyphFilename(char),
+    data: generateGlyphSVG(state.glyphs[char], cols, rows, state.params, char),
+  }));
+  const url = URL.createObjectURL(generateZIP(entries));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'pixel-font-glyphs.zip';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+  showToast(`Exported ${entries.length} glyphs in pixel-font-glyphs.zip`);
 }
 
 function exportCurrentPNG() {
   const { cols, rows } = state.params;
   const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params, state.currentChar);
   const scale = parseInt(document.getElementById('png-scale')?.value) || 4;
-  downloadPNG(`${state.currentChar.toLowerCase()}.png`, svg, scale);
-  showToast(`Exported ${state.currentChar.toLowerCase()}.png ×${scale}`);
+  downloadPNG(glyphFilename(state.currentChar, 'png'), svg, scale);
+  showToast(`Exported ${glyphFilename(state.currentChar, 'png')} ×${scale}`);
 }
 
 function exportSprite() {
@@ -1683,6 +1689,8 @@ function saveCurrentStyle(name) {
 }
 
 function applyStyle(saved) {
+  saved = sanitizeStyle(saved, state.params);
+  if (!saved) return;
   saveUndo();
   const oldCols = state.params.cols;
   const oldRows = state.params.rows;
@@ -1694,13 +1702,13 @@ function applyStyle(saved) {
   }
   Object.assign(state.params, migrated);
 
+  if (state.params.cols !== oldCols || state.params.rows !== oldRows) {
+    resizeAllGlyphs(oldCols, oldRows, state.params.cols, state.params.rows);
+  }
   if (saved.glyphs) {
     for (const [char, data] of Object.entries(saved.glyphs)) {
       state.glyphs[char] = [...data];
     }
-  } else if (saved.params.cols !== oldCols || saved.params.rows !== oldRows) {
-    // Legacy save (params only) — resize existing glyph data to new grid
-    resizeAllGlyphs(oldCols, oldRows, state.params.cols, state.params.rows);
   }
 
   buildGridEditor();
@@ -1736,8 +1744,9 @@ function importStyles(file) {
       const imported = JSON.parse(reader.result);
       if (!Array.isArray(imported)) return;
       const existing = readStyles();
-      for (const entry of imported) {
-        if (!entry.name || !entry.params) continue;
+      for (const candidate of imported) {
+        const entry = sanitizeStyle(candidate, state.params);
+        if (!entry || !entry.name) continue;
         const idx = existing.findIndex(s => s.name === entry.name);
         if (idx >= 0) existing[idx] = entry;
         else existing.push(entry);
