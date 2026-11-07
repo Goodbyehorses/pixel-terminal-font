@@ -1,0 +1,9 @@
+{
+  "name": "pixel-terminal-font",
+  "private": true,
+  "description": "Browser-based pixel font editor (no build step, no runtime dependencies)",
+  "license": "MIT",
+  "scripts": {
+    "test": "node --test \"test/**/*.test.js\""
+  }
+}
