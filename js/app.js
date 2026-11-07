@@ -12,27 +12,57 @@ const MAX_UNDO = 60;
 const undoStack = [];
 const redoStack = [];
 
+function copyGlyphs(glyphs) {
+  return Object.fromEntries(Object.entries(glyphs).map(([k, v]) => [k, [...v]]));
+}
+
+function activeCharStyleName() {
+  const btn = document.querySelector('.char-style-btn.active');
+  return btn ? btn.dataset.style : 'Classic';
+}
+
+function setActiveCharStyle(name) {
+  document.querySelectorAll('.char-style-btn').forEach(b => {
+    b.classList.toggle('active', b.dataset.style === name);
+  });
+}
+
+// Full editor snapshot: all params (grid size, shape, colors…) + glyphs.
 function glyphSnapshot() {
   return {
-    cols: state.params.cols,
-    rows: state.params.rows,
-    glyphs: Object.fromEntries(
-      Object.entries(state.glyphs).map(([k, v]) => [k, [...v]])
-    ),
+    params: { ...state.params },
+    glyphs: copyGlyphs(state.glyphs),
+    charStyle: activeCharStyleName(),
   };
 }
 
-// Restore glyphs + grid size (char styles like Condensed change the grid).
 function restoreSnapshot(snap) {
   for (const [k, v] of Object.entries(snap.glyphs)) state.glyphs[k] = v;
-  if (snap.cols !== state.params.cols || snap.rows !== state.params.rows) {
-    state.params.cols = snap.cols;
-    state.params.rows = snap.rows;
-    syncParamControls();
-  }
+  Object.assign(state.params, snap.params);
+  syncParamControls();   // also sets --fg/--bg and syncs shape buttons
+  setActiveCharStyle(snap.charStyle);
+  const input = document.getElementById('autoscale-height');
+  if (input) input.value = computeCharHeight();
 }
 
+// An in-progress param edit (slider drag, color picker drag). One undo step is
+// saved when it starts; `base` keeps the pristine glyphs so cols/rows resizes
+// are computed from the drag-start state instead of cumulatively.
+let paramEdit = null;
+
+function beginParamEdit(key) {
+  if (paramEdit && paramEdit.key === key) return;
+  saveUndo();
+  paramEdit = {
+    key,
+    base: { cols: state.params.cols, rows: state.params.rows, glyphs: copyGlyphs(state.glyphs) },
+  };
+}
+
+function endParamEdit() { paramEdit = null; }
+
 function saveUndo() {
+  paramEdit = null;   // any new undoable action closes a pending param edit
   undoStack.push(glyphSnapshot());
   if (undoStack.length > MAX_UNDO) undoStack.shift();
   redoStack.length = 0;
@@ -41,6 +71,7 @@ function saveUndo() {
 
 function undo() {
   if (!undoStack.length) return;
+  paramEdit = null;
   redoStack.push(glyphSnapshot());
   const snap = undoStack.pop();
   restoreSnapshot(snap);
@@ -51,6 +82,7 @@ function undo() {
 
 function redo() {
   if (!redoStack.length) return;
+  paramEdit = null;
   undoStack.push(glyphSnapshot());
   const snap = redoStack.pop();
   restoreSnapshot(snap);
@@ -103,18 +135,103 @@ const state = {
 //  Init
 // ─────────────────────────────────────────────
 
+// Factory defaults, captured before any theme flip / restore (used by Reset All).
+const DEFAULT_PARAMS = { ...state.params };
+
 function init() {
   for (const char of Object.keys(FONT_DATA)) {
     state.glyphs[char] = [...FONT_DATA[char]];
   }
+  const restored = loadAutosave();
   buildCharList();
   buildParamControls();
   updateConditionalParams();
   buildStylesUI();
   buildGridEditor();
   buildTypeTester();
+  if (restored) setActiveCharStyle(restored.charStyle);
   render();
-  selectChar('A');
+  selectChar(restored ? state.currentChar : 'A');
+}
+
+// ─────────────────────────────────────────────
+//  Autosave (localStorage)
+// ─────────────────────────────────────────────
+
+const AUTOSAVE_KEY = 'pfg-autosave';
+const AUTOSAVE_DELAY = 500;
+let autosaveTimer = null;
+
+function writeAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = null;
+  try {
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
+      version: 1,
+      params: state.params,
+      glyphs: state.glyphs,
+      currentChar: state.currentChar,
+      charStyle: activeCharStyleName(),
+    }));
+  } catch { /* storage full / unavailable — ignore */ }
+}
+
+function scheduleAutosave() {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(writeAutosave, AUTOSAVE_DELAY);
+}
+
+/**
+ * Restore params + glyphs from localStorage into state. Returns the saved
+ * record on success, or null (state untouched) if missing/invalid/mismatched.
+ */
+function loadAutosave() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem(AUTOSAVE_KEY)); }
+  catch { return null; }
+  if (!saved || typeof saved !== 'object') return null;
+  const { params, glyphs } = saved;
+  if (!params || typeof params !== 'object' || !glyphs || typeof glyphs !== 'object') return null;
+
+  // Grid size must be valid integers within the slider ranges
+  const inRange = (key) => {
+    const def = PARAM_DEFS.find(d => d.key === key);
+    const v = params[key];
+    return Number.isInteger(v) && v >= def.min && v <= def.max;
+  };
+  if (!inRange('cols') || !inRange('rows')) return null;
+  const { cols, rows } = params;
+  const size = cols * rows;
+
+  // Every stored glyph must match the stored grid size and contain only 0/1
+  const restoredGlyphs = {};
+  for (const [char, data] of Object.entries(glyphs)) {
+    if (!Array.isArray(data) || data.length !== size) return null;
+    if (!data.every(v => v === 0 || v === 1)) return null;
+    restoredGlyphs[char] = [...data];
+  }
+
+  // Only take known params whose type matches the default
+  const restoredParams = {};
+  for (const [key, def] of Object.entries(DEFAULT_PARAMS)) {
+    if (typeof params[key] === typeof def) restoredParams[key] = params[key];
+  }
+
+  Object.assign(state.params, restoredParams);
+  // Chars missing from the save get the built-in glyph scaled to the saved grid
+  const src = bestFontSource(cols, rows);
+  for (const char of Object.keys(state.glyphs)) {
+    if (restoredGlyphs[char]) continue;
+    const srcData = src.data[char] || FONT_DATA[char];
+    const sc = src.data[char] ? src.cols : FONT_COLS;
+    const sr = src.data[char] ? src.rows : FONT_ROWS;
+    restoredGlyphs[char] = (sc === cols && sr === rows) ? [...srcData] : scaleGlyph(srcData, sc, sr, cols, rows);
+  }
+  state.glyphs = restoredGlyphs;
+  if (typeof saved.currentChar === 'string' && state.glyphs[saved.currentChar]) {
+    state.currentChar = saved.currentChar;
+  }
+  return { charStyle: typeof saved.charStyle === 'string' ? saved.charStyle : 'Classic' };
 }
 
 // ─────────────────────────────────────────────
@@ -200,6 +317,11 @@ function buildGridEditor() {
 
   const data = state.glyphs[state.currentChar] || [];
   const guides = getGuideRows(rows);
+  // Keep keyboard focus inside the grid after a resize / undo
+  focusedCell = {
+    r: Math.max(0, Math.min(rows - 1, focusedCell.r)),
+    c: Math.max(0, Math.min(cols - 1, focusedCell.c)),
+  };
 
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
@@ -260,10 +382,8 @@ function toggleCellAt(r, c, value) {
   }
   renderEditorPreview();
   renderPreviewStrip(state.currentChar);
+  scheduleTypeTester();
 }
-
-// Legacy alias used in a few places
-function toggleCell(r, c, value) { toggleCellAt(r, c, value); }
 
 function initEditorEvents() {
   const editor = document.getElementById('grid-editor');
@@ -306,6 +426,7 @@ function initEditorEvents() {
     const c = parseInt(cell.dataset.c);
     const current = state.glyphs[state.currentChar][r * state.params.cols + c];
     drawValue = current ? 0 : 1;
+    setCellFocus(r, c);
     toggleCellAt(r, c, drawValue);
   }, { passive: false });
 
@@ -357,6 +478,7 @@ function applyTransform(fn) {
   buildGridEditor();
   renderEditorPreview();
   renderPreviewStrip(state.currentChar);
+  scheduleTypeTester();
 }
 
 function flipH(data, cols, rows) {
@@ -407,15 +529,46 @@ function shiftDown(data, cols, rows) {
   return out;
 }
 
+/**
+ * Rotate 90° clockwise. On a square grid this is an exact rotation. On a
+ * non-square grid (e.g. 5×7) the rotated glyph is rows×cols, so its lit-pixel
+ * bounding box is centered in cols×rows: pixel-exact (pure pad) when it fits;
+ * a dimension that overflows (a full-height 5×7 letter becomes 7 wide) is
+ * shrunk with scaleGlyph, which keeps both edge strokes — plain cropping would
+ * cut off e.g. the stem of a rotated L. Nothing is ever stretched.
+ */
 function rotate90(data, cols, rows) {
-  // Rotate clockwise: new[c][rows-1-r] = old[r][c]
-  // Output grid: newCols=rows, newRows=cols
-  const out = new Array(cols * rows).fill(0);
+  // Rotated grid: rCols = rows, rRows = cols; rot[c][rows-1-r] = old[r][c]
+  const rCols = rows, rRows = cols;
+  const rot = new Array(cols * rows).fill(0);
   for (let r = 0; r < rows; r++)
     for (let c = 0; c < cols; c++)
-      out[c * rows + (rows - 1 - r)] = data[r * cols + c];
-  // After rotation cols/rows swap — but we keep the same grid size
-  // so we remap back into the original cols×rows space
+      rot[c * rCols + (rows - 1 - r)] = data[r * cols + c] || 0;
+  if (cols === rows) return rot;
+
+  // Bounding box of lit pixels in the rotated grid
+  let minR = Infinity, maxR = -1, minC = Infinity, maxC = -1;
+  for (let r = 0; r < rRows; r++)
+    for (let c = 0; c < rCols; c++)
+      if (rot[r * rCols + c]) {
+        minR = Math.min(minR, r); maxR = Math.max(maxR, r);
+        minC = Math.min(minC, c); maxC = Math.max(maxC, c);
+      }
+  const out = new Array(cols * rows).fill(0);
+  if (maxR < 0) return out;
+
+  // Extract the bbox; shrink only the dimension(s) that overflow the target
+  const bw = maxC - minC + 1, bh = maxR - minR + 1;
+  let box = [];
+  for (let r = minR; r <= maxR; r++) box.push(...rot.slice(r * rCols + minC, r * rCols + maxC + 1));
+  const fw = Math.min(bw, cols), fh = Math.min(bh, rows);
+  if (fw !== bw || fh !== bh) box = scaleGlyph(box, bw, bh, fw, fh);
+
+  // Center it in the cols×rows grid
+  const offR = Math.floor((rows - fh) / 2), offC = Math.floor((cols - fw) / 2);
+  for (let r = 0; r < fh; r++)
+    for (let c = 0; c < fw; c++)
+      out[(r + offR) * cols + (c + offC)] = box[r * fw + c];
   return out;
 }
 
@@ -442,6 +595,7 @@ function pasteCurrentChar() {
   buildGridEditor();
   renderEditorPreview();
   renderPreviewStrip(state.currentChar);
+  scheduleTypeTester();
 }
 
 // ─────────────────────────────────────────────
@@ -858,20 +1012,25 @@ function buildParamControls() {
         numInput.step = def.step;
         numInput.value = state.params[def.key];
 
+        // One undo step per drag: opened on the first input, closed on change
         slider.addEventListener('input', () => {
+          beginParamEdit(def.key);
           numInput.value = slider.value;
           const badge = document.getElementById(`param-val-${def.key}`);
           if (badge) badge.textContent = slider.value;
           if (def.hint) slider.title = `${def.hint} (${slider.value})`;
           applyParam(def.key, Number(slider.value));
         });
+        slider.addEventListener('change', endParamEdit);
         numInput.addEventListener('change', () => {
           const v = Math.min(def.max, Math.max(def.min, Number(numInput.value)));
           slider.value = v;
           numInput.value = v;
           const badge = document.getElementById(`param-val-${def.key}`);
           if (badge) badge.textContent = v;
+          beginParamEdit(def.key);
           applyParam(def.key, v);
+          endParamEdit();
         });
 
         wrap.appendChild(slider);
@@ -885,7 +1044,11 @@ function buildParamControls() {
         picker.type = 'color';
         picker.id = `param-${def.key}`;
         picker.value = state.params[def.key];
-        picker.addEventListener('input', () => applyParam(def.key, picker.value));
+        picker.addEventListener('input', () => {
+          beginParamEdit(def.key);
+          applyParam(def.key, picker.value);
+        });
+        picker.addEventListener('change', endParamEdit);
         wrap.appendChild(picker);
 
       } else if (def.type === 'checkbox') {
@@ -896,7 +1059,11 @@ function buildParamControls() {
         checkbox.type = 'checkbox';
         checkbox.id = `param-${def.key}`;
         checkbox.checked = !!state.params[def.key];
-        checkbox.addEventListener('change', () => applyParam(def.key, checkbox.checked));
+        checkbox.addEventListener('change', () => {
+          beginParamEdit(def.key);
+          applyParam(def.key, checkbox.checked);
+          endParamEdit();
+        });
 
         label.textContent = def.label;
         row.appendChild(checkbox);
@@ -989,6 +1156,7 @@ function autoGenerate(targetHeight) {
   const radius = Math.min(Math.floor(cellH / 2), Math.round(cellH * 0.28));
   const dw     = Math.round(cellH * 0.28);
 
+  saveUndo();
   Object.assign(state.params, {
     cellWidth:    cellW,
     cellHeight:   cellH,
@@ -1035,15 +1203,13 @@ function applyCharStyle(style) {
       ? [...srcData]
       : scaleGlyph(srcData, sc, sr, cols, rows);
   }
-  // Update active button state
-  document.querySelectorAll('.char-style-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.style === style.name);
-  });
+  setActiveCharStyle(style.name);
   buildGridEditor();
   render();
 }
 
 function applyCellShape(shape) {
+  saveUndo();
   state.params.cellShape = shape;
   document.querySelectorAll('.cell-shape-btn').forEach(b => {
     b.classList.toggle('active', b.dataset.shape === shape);
@@ -1063,6 +1229,7 @@ function applyCellShape(shape) {
 
 
 function applyPreset(preset) {
+  saveUndo();
   Object.assign(state.params, PRESET_RESETS, preset.params);
   if (preset.params.lockNodeRadius === undefined) state.params.lockNodeRadius = true;
   // Clamp cornerRadius to cell size
@@ -1082,7 +1249,16 @@ function applyParam(key, value) {
   state.params[key] = value;
 
   if (key === 'cols' || key === 'rows') {
-    resizeAllGlyphs(oldCols, oldRows, state.params.cols, state.params.rows);
+    const base = paramEdit && paramEdit.base;
+    if (base) {
+      // Resize from the drag-start glyphs so shrinking then growing loses nothing
+      for (const char of Object.keys(base.glyphs)) {
+        state.glyphs[char] = resizeGlyph(base.glyphs[char], base.cols, base.rows,
+          state.params.cols, state.params.rows);
+      }
+    } else {
+      resizeAllGlyphs(oldCols, oldRows, state.params.cols, state.params.rows);
+    }
     buildGridEditor();
   }
 
@@ -1107,7 +1283,13 @@ function applyParam(key, value) {
     if (key === 'gapX' || key === 'gapY') {
       state.params.gapX = 0;
       state.params.gapY = 0;
-      return;
+      // Reflect the forced 0 in the UI (slider, number box, badge)
+      const slider = document.getElementById(`param-${key}`);
+      const num = document.querySelector(`.param-num[data-key="${key}"]`);
+      const badge = document.getElementById(`param-val-${key}`);
+      if (slider) slider.value = 0;
+      if (num) num.value = 0;
+      if (badge) badge.textContent = 0;
     }
   }
 
@@ -1188,6 +1370,7 @@ function render() {
 function renderEditorPreview() {
   const { cols, rows } = state.params;
   const data = state.glyphs[state.currentChar];
+  scheduleAutosave();   // every edit / param change / char switch passes through here
   if (!data) return;
   document.getElementById('editor-preview').innerHTML =
     generateGlyphSVG(data, cols, rows, state.params, state.currentChar);
@@ -1293,6 +1476,17 @@ function buildTypeTester() {
   panel.appendChild(preview);
 
   renderTypeTester();
+}
+
+// Coalesce type tester re-renders to at most one per frame (pixel drags).
+let typeTesterFrame = 0;
+function scheduleTypeTester() {
+  if (typeTesterFrame) return;
+  if (typeof requestAnimationFrame !== 'function') { renderTypeTester(); return; }
+  typeTesterFrame = requestAnimationFrame(() => {
+    typeTesterFrame = 0;
+    renderTypeTester();
+  });
 }
 
 function renderTypeTester() {
@@ -1416,6 +1610,7 @@ function resetCurrentChar() {
     buildGridEditor();
     renderEditorPreview();
     renderPreviewStrip(state.currentChar);
+    scheduleTypeTester();
   }
 }
 
@@ -1430,6 +1625,28 @@ function resetAll() {
   }
   buildGridEditor();
   render();
+}
+
+/**
+ * Header "Reset All": back to factory state (default params, Classic 5×7
+ * glyphs). With autosave a page refresh no longer gives a clean slate, so this
+ * is the way to get one. It is a single undo step, and the autosave is
+ * overwritten right away. ("Generate Default Characters" still calls resetAll,
+ * which only regenerates glyphs for the current grid.)
+ */
+function resetEverything() {
+  saveUndo();
+  const light = document.documentElement.dataset.theme === 'light';
+  Object.assign(state.params, DEFAULT_PARAMS, light ? { fgColor: '#000000', bgColor: '#ffffff' } : {});
+  state.glyphs = {};
+  for (const char of Object.keys(FONT_DATA)) state.glyphs[char] = [...FONT_DATA[char]];
+  syncParamControls();
+  setActiveCharStyle('Classic');
+  const input = document.getElementById('autoscale-height');
+  if (input) input.value = computeCharHeight();
+  buildGridEditor();
+  render();
+  writeAutosave();
 }
 
 // ─────────────────────────────────────────────
@@ -1734,7 +1951,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.getElementById('btn-export-png').addEventListener('click', exportCurrentPNG);
   document.getElementById('btn-export-sprite').addEventListener('click', exportSprite);
   document.getElementById('btn-reset').addEventListener('click', resetCurrentChar);
-  document.getElementById('btn-reset-all').addEventListener('click', resetAll);
+  document.getElementById('btn-reset-all').addEventListener('click', resetEverything);
   document.getElementById('btn-undo').addEventListener('click', undo);
   document.getElementById('btn-redo').addEventListener('click', redo);
   document.getElementById('btn-theme').addEventListener('click', toggleTheme);
@@ -1742,11 +1959,19 @@ document.addEventListener('DOMContentLoaded', () => {
   document.documentElement.style.setProperty('--fg', state.params.fgColor);
   document.documentElement.style.setProperty('--bg', state.params.bgColor);
 
+  // Flush a pending autosave when the page is closed / reloaded
+  window.addEventListener('pagehide', () => { if (autosaveTimer) writeAutosave(); });
+
   // Keyboard shortcuts
   document.addEventListener('keydown', (e) => {
     const mod = e.ctrlKey || e.metaKey;
     if (!mod) return;
-    if (e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
-    if ((e.key === 'y') || (e.key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
+    // Leave native undo to text fields (type tester, style name, number boxes)
+    const t = e.target;
+    if (t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' ||
+        (t.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'color', 'button'].includes(t.type)))) return;
+    const key = e.key.toLowerCase();   // Shift turns 'z' into 'Z'
+    if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
+    else if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
   });
 });
