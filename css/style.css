@@ -941,7 +941,8 @@ button:focus-visible, input:focus-visible, #grid-editor:focus-visible { outline:
 #preview-strip { max-height: 115px; }
 .preview-char { opacity: 1; padding: 4px; }
 [data-theme="light"] .grid-cell { border-color: #777; }
-[data-theme="light"] .grid-cell.on { background: var(--fg); border-color: var(--fg); }
+/* The editing grid shows binary state with interface contrast.
+   Artwork colours remain visible in the rendered previews and exports. */
 @media (max-width: 1279px) {
   html, body { overflow: auto; height: auto; }
   body { min-height: 100vh; grid-template-rows: auto auto auto auto; }
