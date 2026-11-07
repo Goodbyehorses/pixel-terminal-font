@@ -164,7 +164,7 @@ function generateNodesGeometry(data, cols, rows, params) {
 
   // Vertex pass: corner fill-patches (count=3) and diagonal bridge rects (count=2).
   // Cutter circles are returned separately by generateInnerFilletPath (nodes branch)
-  // and drawn in bgColor on top, same pipeline as inner fillets.
+  // and subtracted with a mask, same pipeline as inner fillets.
   for (let r = 0; r < rows - 1; r++) {
     for (let c = 0; c < cols - 1; c++) {
       const ul = isOn(c,     r)     ? 1 : 0;
@@ -550,11 +550,11 @@ function generateOffLayer(data, cols, rows, params, ind) {
   if (!params.showOff) return '';
   const inverted = data.map(v => (v ? 0 : 1));
   const d = generateGlyphPath(inverted, cols, rows, { ...params, _isolated: true });
-  return d ? `${ind}<path d="${d}" fill="${params.offColor || '#222222'}"/>` : '';
+  return d ? `${ind}<path d="${escapeSVGAttribute(d)}" fill="${escapeSVGAttribute(params.offColor || '#222222')}"/>` : '';
 }
 
 /**
- * Generate concave inner fillet path data (drawn in bgColor OVER the glyph).
+ * Generate concave inner fillet path data (subtracted from the glyph with a mask).
  *
  * At each L / T / + junction where two orthogonal neighbors are both ON but
  * the diagonal is OFF, we cut a quarter-circle notch INTO the corner.
@@ -568,7 +568,7 @@ function generateInnerFilletPath(data, cols, rows, params) {
   const { cellWidth, cellHeight, gapX, gapY, ox, oy } = dotBox(params);
   const ir = params.innerRadius || 0;
   if (cellShape === 'nodes') {
-    // Cutter circles drawn in bgColor on top of positive shapes — carve concave fillets.
+    // Cutter circles subtracted with a mask of positive shapes — carve concave fillets.
     const { gapX: gx, gapY: gy } = resolveGaps(params);
     const nodeR2 = resolveNodeR(params);
     const stepX2 = params.cellWidth + gx;
@@ -718,7 +718,7 @@ function generateDiagLines(data, cols, rows, params) {
   }
 
   if (lines.length === 0) return '';
-  return `<g stroke="${fgColor}" stroke-width="${diagWidth}" stroke-linecap="round" fill="none">
+  return `<g stroke="${escapeSVGAttribute(fgColor)}" stroke-width="${escapeSVGAttribute(diagWidth)}" stroke-linecap="round" fill="none">
     ${lines.join('\n    ')}
   </g>`;
 }
@@ -754,44 +754,17 @@ function generateGlyphSVG(data, cols, rows, params, ch) {
   // Shift content right by extraW to compensate.
   const skewShift = skewX < 0 ? extraW : 0;
 
-  const pathData    = generateGlyphPath(data, cols, rows, params);
-  const filletData  = generateInnerFilletPath(data, cols, rows, params);
-  const diagSVG     = generateDiagLines(data, cols, rows, params);
-
-  const outline      = !!params.outline;
-  const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
-  const outlineColor = params.outlineColor || fgColor;
-  const isNodes      = params.cellShape === 'nodes';
-  // Nodes use halo-path outline (stroke traces internal subpath edges and looks wrong).
-  const strokeAttrs  = (outline && !isNodes) ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
-
-  const lines = [];
-
-  if (bgColor !== 'transparent')
-    lines.push(`  <rect width="${w}" height="${h}" fill="${bgColor}"/>`);
-
-  // Build content group transform (padding translate + optional skew)
   const tx = padding + skewShift;
-  const ty = padding;
   const transforms = [];
-  if (tx !== 0 || ty !== 0) transforms.push(`translate(${tx},${ty})`);
-  if (skewX !== 0)           transforms.push(`skewX(${skewX})`);
-
-  const transformAttr = transforms.length ? ` transform="${transforms.join(' ')}"` : '';
-  const useGroup      = !!transformAttr;
-  const ind           = useGroup ? '    ' : '  ';
-
-  if (useGroup) lines.push(`  <g${transformAttr}>`);
-  const offLayer = generateOffLayer(data, cols, rows, params, ind);
-  if (offLayer) lines.push(offLayer);
-  if (isNodes && outline) lines.push(`${ind}<path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
-  lines.push(`${ind}<path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
-  if (filletData) lines.push(`${ind}<path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
-  if (diagSVG) lines.push(ind + diagSVG.trim());
-  if (useGroup) lines.push(`  </g>`);
+  if (tx !== 0 || padding !== 0) transforms.push(`translate(${tx},${padding})`);
+  if (skewX !== 0) transforms.push(`skewX(${skewX})`);
+  const lines = [];
+  if (bgColor !== 'transparent')
+    lines.push(`  <rect width="${escapeSVGAttribute(w)}" height="${escapeSVGAttribute(h)}" fill="${escapeSVGAttribute(bgColor)}"/>`);
+  lines.push(renderGlyphGroup(data, cols, rows, params, ch, transforms.join(' ')));
 
   const body = lines.join('\n');
-  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">\n${body}\n</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${escapeSVGAttribute(w)}" height="${escapeSVGAttribute(h)}" viewBox="0 0 ${escapeSVGAttribute(w)} ${escapeSVGAttribute(h)}">\n${body}\n</svg>`;
 }
 
 /**
@@ -850,7 +823,7 @@ function generateTextSVG(glyphs, text, params) {
   const lines = [];
 
   if (bgColor !== 'transparent')
-    lines.push(`  <rect width="${totalW}" height="${totalH}" fill="${bgColor}"/>`);
+    lines.push(`  <rect width="${escapeSVGAttribute(totalW)}" height="${escapeSVGAttribute(totalH)}" fill="${escapeSVGAttribute(bgColor)}"/>`);
 
   chars.forEach((ch, i) => {
     // Spaces show an all-unlit matrix when showOff is on (LED board look).
@@ -863,29 +836,11 @@ function generateTextSVG(glyphs, text, params) {
     const transforms = [`translate(${x},${padding})`];
     if (skewX !== 0) transforms.push(`skewX(${skewX})`);
 
-    const gp         = { ...params, _char: ch };
-    const pathData   = generateGlyphPath(data, cols, rows, gp);
-    const filletData = generateInnerFilletPath(data, cols, rows, params);
-    const diagSVG    = generateDiagLines(data, cols, rows, params);
-
-    const outline      = !!params.outline;
-    const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
-    const outlineColor = params.outlineColor || fgColor;
-    const isNodes      = params.cellShape === 'nodes';
-    const strokeAttrs  = (outline && !isNodes) ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
-
-    lines.push(`  <g transform="${transforms.join(' ')}">`);
-    const offLayer = generateOffLayer(data, cols, rows, gp, '    ');
-    if (offLayer) lines.push(offLayer);
-    if (isNodes && outline) lines.push(`    <path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
-    lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
-    if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
-    if (diagSVG) lines.push('    ' + diagSVG.trim());
-    lines.push(`  </g>`);
+    lines.push(renderGlyphGroup(data, cols, rows, params, ch, transforms.join(' ')));
   });
 
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="${totalH}" viewBox="0 0 ${totalW} ${totalH}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${escapeSVGAttribute(totalW)}" height="${escapeSVGAttribute(totalH)}" viewBox="0 0 ${escapeSVGAttribute(totalW)} ${escapeSVGAttribute(totalH)}">`,
     ...lines,
     `</svg>`,
   ].join('\n');
@@ -922,14 +877,18 @@ function downloadPNG(filename, svgString, scale = 4) {
     ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
     canvas.toBlob(pngBlob => {
       const a = document.createElement('a');
-      a.href = URL.createObjectURL(pngBlob);
+      if (!pngBlob) return;
+      const pngURL = URL.createObjectURL(pngBlob);
+      a.href = pngURL;
       a.download = filename;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
+      URL.revokeObjectURL(pngURL);
     }, 'image/png');
     URL.revokeObjectURL(url);
   };
+  img.onerror = () => URL.revokeObjectURL(url);
   img.src = url;
 }
 
@@ -952,43 +911,163 @@ function generateSpriteSheetSVG(glyphs, allChars, params, perRow = 16) {
   const lines = [];
 
   if (bgColor !== 'transparent')
-    lines.push(`  <rect width="${svgW}" height="${svgH}" fill="${bgColor}"/>`);
+    lines.push(`  <rect width="${escapeSVGAttribute(svgW)}" height="${escapeSVGAttribute(svgH)}" fill="${escapeSVGAttribute(bgColor)}"/>`);
 
   allChars.forEach((ch, i) => {
     const data = glyphs[ch];
     if (!data) return;
-    const gp         = { ...params, _char: ch };
-    const pathData   = generateGlyphPath(data, cols, rows, gp);
-    const filletData = generateInnerFilletPath(data, cols, rows, params);
-    const diagSVG    = generateDiagLines(data, cols, rows, params);
-
-    const outline      = !!params.outline;
-    const outlineW     = Math.max(1, params.outlineWidth != null ? params.outlineWidth : 3);
-    const outlineColor = params.outlineColor || fgColor;
-    const isNodes      = params.cellShape === 'nodes';
-    const strokeAttrs  = (outline && !isNodes) ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
-
     const gx = (i % perRow) * stepX;
     const gy = Math.floor(i / perRow) * stepY;
     const skewX = params.skewX || 0;
-    const contentH = rows * (params.cellHeight + (params.gapY ?? params.gap ?? 0)) - (params.gapY ?? params.gap ?? 0);
-    const extraW   = skewExtraWidth(skewX, contentH);
-    const skewShift = skewX < 0 ? extraW : 0;
+    const contentH = glyphDimensions(cols, rows, { ...params, padding: 0 }).h;
+    const skewShift = skewX < 0 ? skewExtraWidth(skewX, contentH) : 0;
     const transforms = [`translate(${gx + skewShift},${gy})`];
     if (skewX !== 0) transforms.push(`skewX(${skewX})`);
-    lines.push(`  <g id="glyph-${ch.codePointAt(0)}" transform="${transforms.join(' ')}">`);
-    const offLayer = generateOffLayer(data, cols, rows, gp, '    ');
-    if (offLayer) lines.push(offLayer);
-    if (isNodes && outline) lines.push(`    <path d="${generateNodesHalo(data, cols, rows, params)}" fill="${outlineColor}"/>`);
-    lines.push(`    <path d="${pathData}" fill="${fgColor}"${strokeAttrs}/>`);
-    if (filletData) lines.push(`    <path d="${filletData}" fill="${bgColor === 'transparent' ? 'none' : bgColor}"/>`);
-    if (diagSVG) lines.push('    ' + diagSVG.trim());
-    lines.push(`  </g>`);
+    lines.push(`  <g id="glyph-${ch.codePointAt(0)}">`);
+    lines.push(renderGlyphGroup(data, cols, rows, params, ch, transforms.join(' ')));
+    lines.push('  </g>');
   });
 
   return [
-    `<svg xmlns="http://www.w3.org/2000/svg" width="${svgW}" height="${svgH}" viewBox="0 0 ${svgW} ${svgH}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" width="${escapeSVGAttribute(svgW)}" height="${escapeSVGAttribute(svgH)}" viewBox="0 0 ${escapeSVGAttribute(svgW)} ${escapeSVGAttribute(svgH)}">`,
     ...lines,
     `</svg>`,
   ].join('\n');
+}
+
+
+function escapeSVGAttribute(value) {
+  return String(value).replace(/[&<>"']/g, ch => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&apos;',
+  })[ch]);
+}
+
+// Shared by single glyph, text and sprite rendering. IDs survive multiple inline SVGs.
+let glyphMaskCounter = 0;
+function renderGlyphGroup(data, cols, rows, params, ch, transform) {
+  params = { ...params, _char: ch };
+  const fgColor = escapeSVGAttribute(params.fgColor || '#ffffff');
+  const outlineColor = escapeSVGAttribute(params.outlineColor || params.fgColor || '#ffffff');
+  const outlineW = Math.max(1, params.outlineWidth ?? 3);
+  const isNodes = params.cellShape === 'nodes';
+  const pathData = generateGlyphPath(data, cols, rows, params);
+  const filletData = generateInnerFilletPath(data, cols, rows, params);
+  const lines = [`  <g${transform ? ` transform="${escapeSVGAttribute(transform)}"` : ''}>`];
+  const offLayer = generateOffLayer(data, cols, rows, params, '    ');
+  if (offLayer) lines.push(offLayer);
+  if (filletData) {
+    const id = `glyph-mask-${++glyphMaskCounter}`;
+    const { w, h } = glyphDimensions(cols, rows, { ...params, padding: 0 });
+    const margin = outlineW * 2;
+    lines.push(`    <defs><mask id="${id}" maskUnits="userSpaceOnUse" x="${-margin}" y="${-margin}" width="${w + margin * 2}" height="${h + margin * 2}" style="mask-type:luminance"><rect x="${-margin}" y="${-margin}" width="${w + margin * 2}" height="${h + margin * 2}" fill="white"/><path d="${escapeSVGAttribute(filletData)}" fill="black"/></mask></defs>`);
+    lines.push(`    <g mask="url(#${id})">`);
+  }
+  if (isNodes && params.outline)
+    lines.push(`    <path d="${escapeSVGAttribute(generateNodesHalo(data, cols, rows, params))}" fill="${outlineColor}"/>`);
+  const strokeAttrs = params.outline && !isNodes ? ` stroke="${outlineColor}" stroke-width="${outlineW * 2}" stroke-linejoin="miter" paint-order="stroke fill"` : '';
+  lines.push(`    <path d="${escapeSVGAttribute(pathData)}" fill="${fgColor}"${strokeAttrs}/>`);
+  if (filletData) lines.push('    </g>');
+  const diagSVG = generateDiagLines(data, cols, rows, params);
+  if (diagSVG) lines.push('    ' + diagSVG.trim());
+  lines.push('  </g>');
+  return lines.join('\n');
+}
+
+function glyphFilename(ch, extension = 'svg') {
+  const code = ch.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
+  const suffix = /^[A-Za-z0-9_-]$/.test(ch) ? `-${ch}` : '';
+  return `u${code}${suffix}.${extension}`;
+}
+
+// Small ZIP32 STORE writer. All filenames are UTF-8; sizes/offsets are little endian.
+function generateZIP(entries) {
+  const encoder = new TextEncoder();
+  const locals = [], central = [];
+  let offset = 0, centralSize = 0;
+  const header = size => new Uint8Array(size);
+  const crc32 = bytes => {
+    let crc = 0xffffffff;
+    for (const byte of bytes) {
+      crc ^= byte;
+      for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ ((crc & 1) ? 0xedb88320 : 0);
+    }
+    return (crc ^ 0xffffffff) >>> 0;
+  };
+  for (const entry of entries) {
+    const name = encoder.encode(entry.name);
+    const data = encoder.encode(entry.data);
+    const crc = crc32(data);
+    const local = header(30 + name.length);
+    const lv = new DataView(local.buffer);
+    lv.setUint32(0, 0x04034b50, true);
+    lv.setUint16(4, 20, true);
+    lv.setUint16(6, 0x0800, true);
+    lv.setUint16(12, 33, true); // 1980-01-01
+    lv.setUint32(14, crc, true);
+    lv.setUint32(18, data.length, true);
+    lv.setUint32(22, data.length, true);
+    lv.setUint16(26, name.length, true);
+    local.set(name, 30);
+    const dir = header(46 + name.length);
+    const dv = new DataView(dir.buffer);
+    dv.setUint32(0, 0x02014b50, true);
+    dv.setUint16(4, 20, true);
+    dv.setUint16(6, 20, true);
+    dv.setUint16(8, 0x0800, true);
+    dv.setUint16(14, 33, true);
+    dv.setUint32(16, crc, true);
+    dv.setUint32(20, data.length, true);
+    dv.setUint32(24, data.length, true);
+    dv.setUint16(28, name.length, true);
+    dv.setUint32(42, offset, true);
+    dir.set(name, 46);
+    locals.push(local, data);
+    central.push(dir);
+    offset += local.length + data.length;
+    centralSize += dir.length;
+  }
+  if (entries.length > 65535 || offset + centralSize > 0xffffffff) throw new Error('ZIP32 size limit exceeded');
+  const end = header(22);
+  const ev = new DataView(end.buffer);
+  ev.setUint32(0, 0x06054b50, true);
+  ev.setUint16(8, entries.length, true);
+  ev.setUint16(10, entries.length, true);
+  ev.setUint32(12, centralSize, true);
+  ev.setUint32(16, offset, true);
+  return new Blob([...locals, ...central, end], { type: 'application/zip' });
+}
+
+// Only allow public style fields; internal rendering overrides must never be imported.
+function sanitizeStyle(saved, fallback) {
+  if (!saved || typeof saved !== 'object' || !saved.params || typeof saved.params !== 'object' || Array.isArray(saved.params)) return null;
+  const ranges = {
+    cellWidth: [6, 120], cellHeight: [6, 120], gap: [0, 40], gapX: [0, 40], gapY: [0, 40],
+    cornerRadius: [0, 60], innerRadius: [0, 30], bridgeRadius: [0, 20], cols: [3, 14], rows: [3, 16],
+    padding: [0, 40], diagWidth: [1, 80], outlineWidth: [1, 20], charSpacing: [0, 120],
+    skewX: [-30, 30], dotSize: [10, 100], shapeWeight: [5, 95],
+  };
+  const shapes = ['rect', 'nodes', 'circle', 'horizontal', 'vertical', 'pixel', 'diamond', 'hexagon', 'ring', 'plus', 'diagonal', 'halftone', 'open', 'dash', 'tile', 'slope', 'seg7', 'seg16'];
+  const params = {};
+  for (const [key, value] of Object.entries(saved.params)) {
+    if (Object.hasOwn(ranges, key) && typeof value === 'number' && Number.isFinite(value)) {
+      const [min, max] = ranges[key];
+      params[key] = Math.min(max, Math.max(min, key === 'cols' || key === 'rows' ? Math.round(value) : value));
+    } else if (['fgColor', 'bgColor', 'offColor', 'outlineColor'].includes(key) && typeof value === 'string' && (/^#[0-9a-f]{6}$/i.test(value) || (key === 'bgColor' && value === 'transparent'))) {
+      params[key] = value;
+    } else if (key === 'cellShape' && shapes.includes(value)) {
+      params[key] = value;
+    } else if (['diagFill', 'cornerMerge', 'outline', 'lockNodeRadius', 'showOff'].includes(key) && typeof value === 'boolean') {
+      params[key] = value;
+    }
+  }
+  const clean = { params };
+  if (typeof saved.name === 'string' && saved.name.trim()) clean.name = saved.name;
+  if (saved.glyphs && typeof saved.glyphs === 'object' && !Array.isArray(saved.glyphs)) {
+    clean.glyphs = {};
+    const size = (params.cols ?? fallback.cols) * (params.rows ?? fallback.rows);
+    for (const [ch, data] of Object.entries(saved.glyphs)) {
+      if ([...ch].length === 1 && Array.isArray(data) && data.length === size && data.every(v => v === 0 || v === 1)) clean.glyphs[ch] = [...data];
+    }
+  }
+  return clean;
 }
