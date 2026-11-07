@@ -864,6 +864,14 @@ const DEFAULT_STYLES = [
     name: 'StitchGrid',
     params: { cellWidth: 36, cellHeight: 36, gapX: 8, gapY: 8, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'plus',       cornerMerge: true, skewX: 0, shapeWeight: 18, showOff: true },
   },
+  {
+    name: 'Voxel Cloud',
+    params: { cellWidth: 36, cellHeight: 36, gapX: 6, gapY: 6, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'halftone',   cornerMerge: true, skewX: 0, dotSize: 85, showOff: true },
+  },
+  {
+    name: 'Holo Slice',
+    params: { cellWidth: 48, cellHeight: 36, gapX: 0, gapY: 10, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'horizontal', cornerMerge: true, skewX: -8, dotSize: 65, showOff: true },
+  },
 ];
 
 const CELL_SHAPES = [
