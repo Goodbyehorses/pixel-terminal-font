@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: terminal-6x10-descenders
+expected_outcome: |
+  An importable 6x10 (or close) style file with real descenders below the baseline on g j p q y, a slashed or dotted zero distinct from O, terminal-like letterforms, and a specimen image.
