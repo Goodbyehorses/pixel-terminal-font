@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Validate a Base Characters source file and convert it to a style file the
-// Pixel Font Generator can load with Styles -> Import.
+// Pixel Font Generator can load with Saved styles -> Import.
 //
 //   node build_font.js <font.source.json> [--out <file.style.json>] [--repo <repo root>]
 //
@@ -49,7 +49,7 @@ for (const [ch, rowList] of Object.entries(glyphs)) {
 const missing = REQUIRED_CHARS.filter(c => !glyphs[c]);
 if (missing.length) errors.push(`missing ${missing.length} required characters: ${missing.join(' ')}`);
 const extra = Object.keys(glyphs).filter(c => !REQUIRED_CHARS.includes(c));
-if (extra.length) warnings.push(`extra characters (kept, but the app has no button for them): ${extra.join(' ')}`);
+if (extra.length) warnings.push(`characters beyond the core set (kept; the app shows only those it has a button for): ${extra.join(' ')}`);
 
 for (const ch of REQUIRED_CHARS) {
   if (flat[ch] && !flat[ch].some(Boolean)) warnings.push(`${JSON.stringify(ch)} is completely blank`);
@@ -113,4 +113,4 @@ fs.writeFileSync(out, JSON.stringify(entries, null, 1));
 const lit = Object.values(flat).reduce((n, g) => n + g.reduce((a, b) => a + b, 0), 0);
 console.log(`✓ ${name}: ${Object.keys(flat).length} glyphs on a ${cols}×${rows} grid, ${(lit / Object.keys(flat).length).toFixed(1)} lit pixels/glyph on average, ${entries.length - 1} look(s), ${samples.length} theme sample(s)`);
 for (const w of warnings) console.log('  ! ' + w);
-console.log(`→ ${out}  (load it in the app with Styles → Import, then Load)`);
+console.log(`→ ${out}  (load it in the app with Saved styles → Import, then Load)`);

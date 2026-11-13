@@ -1,8 +1,6 @@
 // app.js — state management, UI, and event handling
 
-// ─────────────────────────────────────────────
-//  State
-// ─────────────────────────────────────────────
+const $ = (id) => document.getElementById(id);
 
 // ─────────────────────────────────────────────
 //  Undo / Redo
@@ -16,38 +14,30 @@ function copyGlyphs(glyphs) {
   return Object.fromEntries(Object.entries(glyphs).map(([k, v]) => [k, [...v]]));
 }
 
-function activeCharStyleName() {
-  const btn = document.querySelector('.char-style-btn.active');
-  return btn ? btn.dataset.style : 'Classic';
-}
-
-function setActiveCharStyle(name) {
-  document.querySelectorAll('.char-style-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.style === name);
-  });
-}
-
-// Full editor snapshot: all params (grid size, shape, colors…) + glyphs.
+// Full editor snapshot: all params (grid size, shape, colors…) + drawings.
 function glyphSnapshot() {
   return {
     params: { ...state.params },
     glyphs: copyGlyphs(state.glyphs),
-    charStyle: activeCharStyleName(),
+    pristine: copyGlyphs(state.pristine),
+    charStyle: state.charStyle,
+    look: state.look,
   };
 }
 
 function restoreSnapshot(snap) {
-  clearPreset();
-  for (const [k, v] of Object.entries(snap.glyphs)) state.glyphs[k] = v;
+  state.glyphs = copyGlyphs(snap.glyphs);
+  state.pristine = copyGlyphs(snap.pristine);
   Object.assign(state.params, snap.params);
-  syncParamControls();   // also sets --fg/--bg and syncs shape buttons
+  if (!state.glyphs[state.currentChar]) state.currentChar = ALL_CHARS.find(ch => state.glyphs[ch]) || 'A';
+  syncParamControls();
   setActiveCharStyle(snap.charStyle);
-  const input = document.getElementById('autoscale-height');
-  if (input) input.value = computeCharHeight();
+  setLook(snap.look);
+  syncFitHeight();
 }
 
 // An in-progress param edit (slider drag, color picker drag). One undo step is
-// saved when it starts; `base` keeps the pristine glyphs so cols/rows resizes
+// saved when it starts; `base` keeps the pristine drawings so cols/rows resizes
 // are computed from the drag-start state instead of cumulatively.
 let paramEdit = null;
 
@@ -56,7 +46,10 @@ function beginParamEdit(key) {
   saveUndo();
   paramEdit = {
     key,
-    base: { cols: state.params.cols, rows: state.params.rows, glyphs: copyGlyphs(state.glyphs) },
+    base: {
+      cols: state.params.cols, rows: state.params.rows,
+      glyphs: copyGlyphs(state.glyphs), pristine: copyGlyphs(state.pristine),
+    },
   };
 }
 
@@ -74,10 +67,8 @@ function undo() {
   if (!undoStack.length) return;
   paramEdit = null;
   redoStack.push(glyphSnapshot());
-  const snap = undoStack.pop();
-  restoreSnapshot(snap);
-  buildGridEditor();
-  render();
+  restoreSnapshot(undoStack.pop());
+  refreshAll();
   updateUndoUI();
 }
 
@@ -85,22 +76,25 @@ function redo() {
   if (!redoStack.length) return;
   paramEdit = null;
   undoStack.push(glyphSnapshot());
-  const snap = redoStack.pop();
-  restoreSnapshot(snap);
-  buildGridEditor();
-  render();
+  restoreSnapshot(redoStack.pop());
+  refreshAll();
   updateUndoUI();
 }
 
 function updateUndoUI() {
-  const btnUndo = document.getElementById('btn-undo');
-  const btnRedo = document.getElementById('btn-redo');
-  if (btnUndo) btnUndo.disabled = undoStack.length === 0;
-  if (btnRedo) btnRedo.disabled = redoStack.length === 0;
+  $('btn-undo').disabled = undoStack.length === 0;
+  $('btn-redo').disabled = redoStack.length === 0;
 }
+
+// ─────────────────────────────────────────────
+//  State
+// ─────────────────────────────────────────────
 
 const state = {
   currentChar: 'A',
+  charStyle: 'Classic',     // the letterform set the drawings came from
+  look: 'Rounded',          // the look last applied, or null once it is customised
+  fontName: 'Pixel Font',
   params: {
     cellWidth:    40,
     cellHeight:   40,
@@ -130,52 +124,102 @@ const state = {
     offColor:     '#222222',
   },
   glyphs: {},
+  pristine: {},   // drawings as last generated; a drawing that differs is marked as edited
 };
+
+// Factory defaults, captured before any restore (used by Reset project).
+const DEFAULT_PARAMS = { ...state.params };
+const DEFAULT_FONT_NAME = state.fontName;
+
+// ─────────────────────────────────────────────
+//  Character groups
+// ─────────────────────────────────────────────
+
+const CHAR_GROUPS = [
+  { label: 'Uppercase',   chars: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('') },
+  { label: 'Lowercase',   chars: 'abcdefghijklmnopqrstuvwxyz'.split('') },
+  { label: 'Digits',      chars: '0123456789'.split('') },
+  { label: 'Accented capitals',  chars: [...'ÀÁÂÃÄÅÆÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖØÙÚÛÜÝÞ'] },
+  { label: 'Accented lowercase', chars: [...'ßàáâãäåæçèéêëìíîïðñòóôõöøùúûüýþÿ'] },
+  { label: 'Punctuation', chars: ['.', ',', '!', '?', ':', ';', '-', "'", '(', ')', ...'¡¿–—‘’“”„…•·«»'] },
+  { label: 'Symbols',     chars: ['@','#','$','%','&','*','+','=','/','\\','<','>','[',']','{','}','"','~','^','_','|','`', ...'¢£¤¥€¦§¨´¯¸ªº°¹²³±×÷¬µ¶≠≤≥≈∞'] },
+  { label: 'Arrows and shapes', chars: [...'←↑→↓↔↕■□▲▼◀▶●○◆♥✓'] },
+  { label: 'Box drawing', chars: [...'─│┌┐└┘├┤┬┴┼═║╔╗╚╝╠╣╦╩╬'] },
+  { label: 'Blocks',      chars: [...'█▀▄▌▐░▒▓'] },
+  { label: 'Powerline',   chars: ['\uE0A0', '\uE0A1', '\uE0A2', '\uE0B0', '\uE0B1', '\uE0B2', '\uE0B3'] },
+];
+const ALL_CHARS = CHAR_GROUPS.flatMap(g => g.chars);
+
+// Private-use characters have no shape of their own in the interface font, so they
+// are shown by name (headings, screen readers) and by code point (glyph map).
+const CHAR_NAMES = {
+  '\uE0A0': 'Branch', '\uE0A1': 'Line number', '\uE0A2': 'Lock',
+  '\uE0B0': 'Right separator', '\uE0B1': 'Right thin separator',
+  '\uE0B2': 'Left separator', '\uE0B3': 'Left thin separator',
+};
+const charName = (char) => CHAR_NAMES[char] || char;
+const charKey = (char) => CHAR_NAMES[char] ? char.codePointAt(0).toString(16).toUpperCase() : char;
 
 // ─────────────────────────────────────────────
 //  Init
 // ─────────────────────────────────────────────
 
-// Factory defaults, captured before any theme flip / restore (used by Reset All).
-const DEFAULT_PARAMS = { ...state.params };
-
 function init() {
-  for (const char of Object.keys(FONT_DATA)) {
-    state.glyphs[char] = [...FONT_DATA[char]];
-  }
-  const restored = loadAutosave();
-  buildCharList();
+  for (const char of Object.keys(FONT_DATA)) state.glyphs[char] = [...FONT_DATA[char]];
+  state.pristine = copyGlyphs(state.glyphs);
+
+  let restored = null;
+  try { restored = parseProject(JSON.parse(localStorage.getItem(AUTOSAVE_KEY))); } catch {}
+  if (restored) applyProject(restored);
+
+  buildCharMap();
+  buildEditorToolbar();
   buildParamControls();
-  updateConditionalParams();
   buildStylesUI();
-  buildGridEditor();
   buildTypeTester();
-  if (restored) { setActiveCharStyle(restored.charStyle); showToast('Restored your last session'); }
+  syncParamControls();
+  setActiveCharStyle(state.charStyle);
+  setLook(state.look);
+  $('font-name').value = state.fontName;
+  refreshAll();
+  if (restored) showToast('Restored your last session', 3000);
+}
+
+/** Redraw everything that depends on the drawings or the look. */
+function refreshAll() {
+  selectChar(state.currentChar);
   render();
-  selectChar(restored ? state.currentChar : 'A');
 }
 
 // ─────────────────────────────────────────────
-//  Autosave (localStorage)
+//  Autosave (localStorage) and project files
 // ─────────────────────────────────────────────
 
 const AUTOSAVE_KEY = 'pfg-autosave';
 const AUTOSAVE_DELAY = 500;
 let autosaveTimer = null;
 
+function projectRecord() {
+  return {
+    app: 'pixel-font-generator',
+    version: 1,
+    fontName: state.fontName,
+    params: state.params,
+    glyphs: state.glyphs,
+    pristine: state.pristine,
+    currentChar: state.currentChar,
+    charStyle: state.charStyle,
+    look: state.look,
+  };
+}
+
 function writeAutosave() {
   clearTimeout(autosaveTimer);
   autosaveTimer = null;
   try {
-    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify({
-      version: 1,
-      params: state.params,
-      glyphs: state.glyphs,
-      currentChar: state.currentChar,
-      charStyle: activeCharStyleName(),
-    }));
-    setSaveStatus('Saved on this device');
-  } catch { setSaveStatus('Could not save on this device'); }
+    localStorage.setItem(AUTOSAVE_KEY, JSON.stringify(projectRecord()));
+    setSaveStatus('Saved in this browser');
+  } catch { setSaveStatus('Not saved: browser storage is full or blocked'); }
 }
 
 function scheduleAutosave() {
@@ -184,113 +228,223 @@ function scheduleAutosave() {
   autosaveTimer = setTimeout(writeAutosave, AUTOSAVE_DELAY);
 }
 
+function setSaveStatus(text) { $('autosave-status').textContent = text; }
+
 /**
- * Restore params + glyphs from localStorage into state. Returns the saved
- * record on success, or null (state untouched) if missing/invalid/mismatched.
+ * Validate a saved record (autosave or project file). Returns a clean record,
+ * or null when it is not usable. Nothing in `state` is touched.
  */
-function loadAutosave() {
-  let saved;
-  try { saved = JSON.parse(localStorage.getItem(AUTOSAVE_KEY)); }
-  catch { return null; }
-  if (!saved || typeof saved !== 'object') return null;
-  const { params, glyphs } = saved;
-  if (!params || typeof params !== 'object' || !glyphs || typeof glyphs !== 'object') return null;
+function parseProject(saved) {
+  if (!saved || typeof saved !== 'object' || !saved.params || !saved.glyphs) return null;
+  const clean = sanitizeStyle({ params: saved.params, glyphs: saved.glyphs }, DEFAULT_PARAMS);
+  if (!clean || !clean.glyphs || !Number.isInteger(clean.params.cols) || !Number.isInteger(clean.params.rows)) return null;
 
-  // Grid size must be valid integers within the slider ranges
-  const inRange = (key) => {
-    const def = PARAM_DEFS.find(d => d.key === key);
-    const v = params[key];
-    return Number.isInteger(v) && v >= def.min && v <= def.max;
-  };
-  if (!inRange('cols') || !inRange('rows')) return null;
+  // Migrate legacy saves: 'gap' → gapX/gapY
+  const params = { ...DEFAULT_PARAMS, ...clean.params };
+  if (params.gap != null && clean.params.gapX == null) { params.gapX = params.gap; params.gapY = params.gap; }
+  delete params.gap;
   const { cols, rows } = params;
-  const size = cols * rows;
 
-  // Every stored glyph must match the stored grid size and contain only 0/1
-  const restoredGlyphs = {};
-  for (const [char, data] of Object.entries(glyphs)) {
-    if (!Array.isArray(data) || data.length !== size) return null;
-    if (!data.every(v => v === 0 || v === 1)) return null;
-    restoredGlyphs[char] = [...data];
-  }
-
-  // Only take known params whose type matches the default
-  const restoredParams = {};
-  for (const [key, def] of Object.entries(DEFAULT_PARAMS)) {
-    if (typeof params[key] === typeof def) restoredParams[key] = params[key];
-  }
-
-  // Shapes that no longer exist (e.g. the removed 7/16-segment displays) fall back to rect.
-  if (restoredParams.cellShape && !CELL_SHAPES.some(([k]) => k === restoredParams.cellShape)) restoredParams.cellShape = 'rect';
-  Object.assign(state.params, restoredParams);
-  // Chars missing from the save get the built-in glyph scaled to the saved grid
+  // Characters missing from the save get the built-in drawing scaled to its grid
+  const glyphs = clean.glyphs;
   const src = bestFontSource(cols, rows);
-  for (const char of Object.keys(state.glyphs)) {
-    if (restoredGlyphs[char]) continue;
+  for (const char of Object.keys(FONT_DATA)) {
+    if (glyphs[char]) continue;
     const srcData = src.data[char] || FONT_DATA[char];
     const sc = src.data[char] ? src.cols : FONT_COLS;
     const sr = src.data[char] ? src.rows : FONT_ROWS;
-    restoredGlyphs[char] = (sc === cols && sr === rows) ? [...srcData] : scaleGlyph(srcData, sc, sr, cols, rows);
+    glyphs[char] = (sc === cols && sr === rows) ? [...srcData] : scaleGlyph(srcData, sc, sr, cols, rows);
   }
-  state.glyphs = restoredGlyphs;
-  if (typeof saved.currentChar === 'string' && state.glyphs[saved.currentChar]) {
-    state.currentChar = saved.currentChar;
-  }
-  return { charStyle: typeof saved.charStyle === 'string' ? saved.charStyle : 'Classic' };
+
+  const cleanPristine = saved.pristine && sanitizeStyle({ params: saved.params, glyphs: saved.pristine }, DEFAULT_PARAMS);
+  const pristine = copyGlyphs(glyphs);
+  if (cleanPristine && cleanPristine.glyphs) Object.assign(pristine, cleanPristine.glyphs);
+
+  return {
+    params, glyphs, pristine,
+    currentChar: typeof saved.currentChar === 'string' && glyphs[saved.currentChar] ? saved.currentChar : 'A',
+    charStyle: CHAR_STYLES.some(s => s.name === saved.charStyle) ? saved.charStyle : 'Classic',
+    look: DEFAULT_STYLES.some(s => s.name === saved.look) ? saved.look : null,
+    fontName: typeof saved.fontName === 'string' && saved.fontName.trim() ? saved.fontName.trim().slice(0, 60) : DEFAULT_FONT_NAME,
+  };
+}
+
+function applyProject(rec) {
+  Object.assign(state.params, rec.params);
+  state.glyphs = rec.glyphs;
+  state.pristine = rec.pristine;
+  state.currentChar = rec.currentChar;
+  state.charStyle = rec.charStyle;
+  state.look = rec.look;
+  state.fontName = rec.fontName;
+}
+
+function saveProjectFile() {
+  const json = JSON.stringify(projectRecord());
+  const file = `${fileSlug(state.fontName)}.pixelfont.json`;
+  downloadBlob(file, new Blob([json], { type: 'application/json;charset=utf-8' }));
+  showToast(`Saved ${file}`);
+}
+
+function openProjectFile(file) {
+  const reader = new FileReader();
+  reader.onload = () => {
+    let rec = null;
+    try { rec = parseProject(JSON.parse(reader.result)); } catch {}
+    if (!rec) {
+      showToast(`“${file.name}” is not a Pixel Font Generator project file. Your current project is unchanged.`, 0);
+      return;
+    }
+    saveUndo();
+    const before = undoStack[undoStack.length - 1], nameBefore = state.fontName;
+    applyProject(rec);
+    $('font-name').value = state.fontName;
+    syncParamControls();
+    setActiveCharStyle(state.charStyle);
+    setLook(state.look);
+    syncFitHeight();
+    refreshAll();
+    offerProjectUndo(`Opened ${file.name}`, before, () => { state.fontName = nameBefore; $('font-name').value = nameBefore; });
+  };
+  reader.onerror = () => showToast(`Could not read “${file.name}”. Your current project is unchanged.`, 0);
+  reader.readAsText(file);
+}
+
+function fileSlug(name) {
+  return (name || '').trim().replace(/[^A-Za-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'pixel-font';
 }
 
 // ─────────────────────────────────────────────
-//  Character groups
+//  Glyph map
 // ─────────────────────────────────────────────
 
-const CHAR_GROUPS = [
-  { label: 'A–Z',  chars: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('') },
-  { label: 'a–z',  chars: 'abcdefghijklmnopqrstuvwxyz'.split('') },
-  { label: '0–9',  chars: '0123456789'.split('') },
-  { label: 'ÅÄÖ',  chars: ['Å', 'Ä', 'Ö'] },
-  { label: '.,!?', chars: ['.', ',', '!', '?', ':', '-', "'", '(', ')'] },
-  { label: 'Sym',  chars: ['@','#','$','%','&','*','+','=','/','\\','<','>','[',']','{','}','"','~','^','_','|'] },
-];
-
-// ─────────────────────────────────────────────
-//  Character list
-// ─────────────────────────────────────────────
-
-function buildCharList() {
-  const list = document.getElementById('char-list');
-  list.innerHTML = '';
-  for (const group of CHAR_GROUPS) {
-    const lbl = document.createElement('div');
-    lbl.className = 'char-group-label';
-    lbl.textContent = group.label;
-    list.appendChild(lbl);
+function buildCharMap() {
+  const map = $('char-map');
+  map.innerHTML = '';
+  CHAR_GROUPS.forEach((group, gi) => {
+    const section = document.createElement('div');
+    section.className = 'char-group';
+    const label = Object.assign(document.createElement('h3'), { className: 'char-group-label', id: `char-group-${gi}`, textContent: group.label });
+    const grid = document.createElement('div');
+    grid.className = 'char-grid';
+    grid.setAttribute('role', 'group');
+    grid.setAttribute('aria-labelledby', label.id);
     for (const char of group.chars) {
       const btn = document.createElement('button');
       btn.className = 'char-btn';
-      btn.textContent = char;
       btn.dataset.char = char;
+      btn.tabIndex = -1;
+      btn.innerHTML = '<span class="char-thumb" aria-hidden="true"></span><span class="char-key" aria-hidden="true"></span>';
+      btn.querySelector('.char-key').textContent = charKey(char);
       btn.addEventListener('click', () => selectChar(char));
-      list.appendChild(btn);
+      grid.appendChild(btn);
     }
-  }
+    section.append(label, grid);
+    map.appendChild(section);
+  });
+
+  // One tab stop for the whole map: arrow keys move between characters.
+  map.addEventListener('keydown', (e) => {
+    const cur = e.target.closest('.char-btn');
+    if (!cur) return;
+    const i = ALL_CHARS.indexOf(cur.dataset.char);
+    let next = null;
+    if (e.key === 'ArrowRight') next = ALL_CHARS[i + 1];
+    else if (e.key === 'ArrowLeft') next = ALL_CHARS[i - 1];
+    else if (e.key === 'Home') next = ALL_CHARS[0];
+    else if (e.key === 'End') next = ALL_CHARS[ALL_CHARS.length - 1];
+    else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') next = charInAdjacentRow(cur, e.key === 'ArrowDown' ? 1 : -1);
+    else return;
+    e.preventDefault();
+    if (next) selectChar(next, true);
+  });
 }
 
-function selectChar(char) {
+function charButton(char) {
+  return [...document.querySelectorAll('.char-btn')].find(b => b.dataset.char === char);
+}
+
+/** The character visually above or below, by position on screen. */
+function charInAdjacentRow(btn, dir) {
+  const from = btn.getBoundingClientRect();
+  let best = null, bestScore = Infinity;
+  for (const other of document.querySelectorAll('.char-btn')) {
+    const r = other.getBoundingClientRect();
+    const dy = (r.top - from.top) * dir;
+    if (dy < 4) continue;
+    const score = dy * 4 + Math.abs(r.left - from.left);
+    if (score < bestScore) { bestScore = score; best = other; }
+  }
+  return best && best.dataset.char;
+}
+
+function isEdited(char) {
+  const a = state.glyphs[char], b = state.pristine[char];
+  return !!a && !!b && (a.length !== b.length || a.some((v, i) => v !== b[i]));
+}
+
+function selectChar(char, focusMap) {
+  if (!state.glyphs[char]) return;
   state.currentChar = char;
-  document.querySelectorAll('.char-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.char === char);
-  });
+  for (const b of document.querySelectorAll('.char-btn')) {
+    const on = b.dataset.char === char;
+    b.classList.toggle('active', on);
+    b.tabIndex = on ? 0 : -1;
+    if (on) b.setAttribute('aria-current', 'true'); else b.removeAttribute('aria-current');
+  }
+  const btn = charButton(char);
+  if (btn) {
+    btn.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    if (focusMap) btn.focus();
+  }
   buildGridEditor();
   renderEditorPreview();
+}
+
+function stepChar(dir) {
+  const i = ALL_CHARS.indexOf(state.currentChar);
+  selectChar(ALL_CHARS[(i + dir + ALL_CHARS.length) % ALL_CHARS.length]);
+}
+
+function updateCharHeading() {
+  const char = state.currentChar;
+  const code = char.codePointAt(0).toString(16).toUpperCase().padStart(4, '0');
+  $('char-name').textContent = charName(char);
+  $('char-meta').textContent = `U+${code} · ${ALL_CHARS.indexOf(char) + 1} of ${ALL_CHARS.length}${isEdited(char) ? ' · edited' : ''}`;
+}
+
+/** Params for the small neutral previews: the look, in interface colour. */
+function thumbParams(params) {
+  return {
+    ...params,
+    fgColor: 'currentColor', outlineColor: 'currentColor', bgColor: 'transparent',
+    offColor: 'color-mix(in srgb, currentColor 22%, transparent)', padding: 0,
+  };
+}
+
+function renderCharMap(onlyChar) {
+  const { cols, rows } = state.params;
+  const params = thumbParams(state.params);
+  for (const btn of document.querySelectorAll('.char-btn')) {
+    const char = btn.dataset.char;
+    if (onlyChar && char !== onlyChar) continue;
+    const data = state.glyphs[char];
+    btn.hidden = !data;
+    if (!data) continue;
+    btn.querySelector('.char-thumb').innerHTML = generateGlyphSVG(data, cols, rows, params, char);
+    const edited = isEdited(char);
+    btn.classList.toggle('edited', edited);
+    btn.setAttribute('aria-label', `Character ${charName(char)}${edited ? ', edited' : ''}`);
+  }
 }
 
 // ─────────────────────────────────────────────
 //  Editor tool state
 // ─────────────────────────────────────────────
 
-let isDragging    = false;
-let drawValue     = 1;
+let drag          = null;    // { id, value, last } while a pointer is drawing
 let symmetryMode  = false;
+let fillMode      = false;
 let brushSize     = 1;
 let showGuides    = true;
 let focusedCell   = { r: 0, c: 0 };
@@ -298,30 +452,20 @@ let clipboard     = null;
 let clipboardCols = 0;
 let clipboardRows = 0;
 
-// Guide row indices for 7-row grid (scale proportionally for other sizes)
-function getGuideRows(rows) {
-  // ascender=0, xHeight=1, baseline=rows-2, descender=rows-1
-  return {
-    ascender:  0,
-    xHeight:   Math.round(rows * 1 / 7),
-    baseline:  rows - 2,
-    descender: rows - 1,
-  };
-}
-
 // ─────────────────────────────────────────────
 //  Grid editor
 // ─────────────────────────────────────────────
 
 function buildGridEditor() {
   const { cols, rows } = state.params;
-  const editor = document.getElementById('grid-editor');
+  const editor = $('grid-editor');
   editor.innerHTML = '';
-  editor.style.gridTemplateColumns = `repeat(${cols}, 32px)`;
-  editor.setAttribute('tabindex', '0');
+  editor.style.setProperty('--cols', cols);
+  editor.style.setProperty('--rows', rows);
 
   const data = state.glyphs[state.currentChar] || [];
-  const guides = getGuideRows(rows);
+  // Guides follow the letterform set, not the drawing in progress, so they stay put.
+  const guides = showGuides ? detectMetrics(state.pristine, cols, rows) : null;
   // Keep keyboard focus inside the grid after a resize / undo
   focusedCell = {
     r: Math.max(0, Math.min(rows - 1, focusedCell.r)),
@@ -329,39 +473,67 @@ function buildGridEditor() {
   };
 
   for (let r = 0; r < rows; r++) {
+    const row = document.createElement('div');
+    row.setAttribute('role', 'row');
+    const top = guides && (r === guides.capRow ? 'cap' : r === guides.xRow ? 'x' : '');
+    const base = guides && r === guides.baselineRow - 1;
+
+    const gutter = document.createElement('span');
+    gutter.className = 'row-guide';
+    gutter.setAttribute('aria-hidden', 'true');
+    if (top) gutter.appendChild(Object.assign(document.createElement('i'), { className: 'g-top', textContent: top }));
+    if (base) gutter.appendChild(Object.assign(document.createElement('i'), { className: 'g-base', textContent: 'base' }));
+    row.appendChild(gutter);
+
     for (let c = 0; c < cols; c++) {
       const cell = document.createElement('div');
       cell.className = 'grid-cell';
+      cell.id = `pixel-${r}-${c}`;
       cell.dataset.r = r;
       cell.dataset.c = c;
-      if (data[r * cols + c]) cell.classList.add('on');
-
-      // Guide line markers (top border of first cell in row)
-      if (showGuides && c === 0) {
-        if (r === guides.ascender)  cell.dataset.guide = 'ascender';
-        else if (r === guides.xHeight)  cell.dataset.guide = 'xheight';
-        else if (r === guides.baseline) cell.dataset.guide = 'baseline';
-      }
-
+      cell.setAttribute('role', 'gridcell');
+      cell.setAttribute('aria-rowindex', r + 1);
+      cell.setAttribute('aria-colindex', c + 1);
+      if (top) cell.dataset.guide = top;
+      if (base) cell.dataset.base = '';
       if (r === focusedCell.r && c === focusedCell.c) cell.classList.add('focused');
-      let row = editor.querySelector(`[data-grid-row="${r}"]`);
-      if (!row) { row = document.createElement('div'); row.dataset.gridRow = r; row.setAttribute('role', 'row'); row.style.display = 'contents'; editor.appendChild(row); }
       row.appendChild(cell);
+      setCellState(cell, !!data[r * cols + c]);
     }
+    editor.appendChild(row);
   }
-  syncGridAccessibility();
+
+  editor.setAttribute('role', 'grid');
+  editor.setAttribute('aria-label', `Pixel editor for ${state.currentChar}`);
+  editor.setAttribute('aria-describedby', 'editor-instructions');
+  editor.setAttribute('aria-rowcount', rows);
+  editor.setAttribute('aria-colcount', cols);
+  editor.setAttribute('aria-activedescendant', `pixel-${focusedCell.r}-${focusedCell.c}`);
+}
+
+function cellAt(r, c) { return $(`pixel-${r}-${c}`); }
+
+function setCellState(cell, on) {
+  cell.classList.toggle('on', on);
+  cell.setAttribute('aria-selected', String(on));
+  cell.setAttribute('aria-label', `Row ${+cell.dataset.r + 1}, column ${+cell.dataset.c + 1}, ${on ? 'on' : 'off'}`);
 }
 
 function setCellFocus(r, c) {
   const { cols, rows } = state.params;
   r = Math.max(0, Math.min(rows - 1, r));
   c = Math.max(0, Math.min(cols - 1, c));
-  const prev = document.querySelector('#grid-editor .grid-cell.focused');
-  if (prev) prev.classList.remove('focused');
+  cellAt(focusedCell.r, focusedCell.c)?.classList.remove('focused');
   focusedCell = { r, c };
-  const next = document.querySelector(`#grid-editor .grid-cell[data-r="${r}"][data-c="${c}"]`);
-  if (next) next.classList.add('focused');
-  syncGridAccessibility();
+  cellAt(r, c)?.classList.add('focused');
+  $('grid-editor').setAttribute('aria-activedescendant', `pixel-${r}-${c}`);
+}
+
+/** Everything that shows the current character, after its drawing changed. */
+function refreshCurrentChar() {
+  renderEditorPreview();
+  renderCharMap(state.currentChar);
+  scheduleTypeTester();
 }
 
 function toggleCellAt(r, c, value) {
@@ -369,91 +541,76 @@ function toggleCellAt(r, c, value) {
   const data = state.glyphs[state.currentChar];
   if (!data) return;
 
+  const paint = (pr, pc) => {
+    if (pr < 0 || pr >= rows || pc < 0 || pc >= cols) return;
+    data[pr * cols + pc] = value;
+    const el = cellAt(pr, pc);
+    if (el) setCellState(el, !!value);
+  };
   const half = Math.floor(brushSize / 2);
   for (let dr = 0; dr < brushSize; dr++) {
     for (let dc = 0; dc < brushSize; dc++) {
-      const br = r + dr - half;
-      const bc = c + dc - half;
-      if (br < 0 || br >= rows || bc < 0 || bc >= cols) continue;
-      data[br * cols + bc] = value;
-      const el = document.querySelector(`#grid-editor .grid-cell[data-r="${br}"][data-c="${bc}"]`);
-      if (el) el.classList.toggle('on', !!value);
-
-      if (symmetryMode) {
-        const mc = cols - 1 - bc;
-        if (mc !== bc) {
-          data[br * cols + mc] = value;
-          const mel = document.querySelector(`#grid-editor .grid-cell[data-r="${br}"][data-c="${mc}"]`);
-          if (mel) mel.classList.toggle('on', !!value);
-        }
-      }
+      const br = r + dr - half, bc = c + dc - half;
+      paint(br, bc);
+      if (symmetryMode && bc >= 0 && bc < cols) paint(br, cols - 1 - bc);
     }
   }
-  syncGridAccessibility();
-  renderEditorPreview();
-  renderPreviewStrip(state.currentChar);
-  scheduleTypeTester();
+  refreshCurrentChar();
+}
+
+/** Flip the connected area of same-state pixels under (r, c). */
+function floodFill(r, c) {
+  const { cols, rows } = state.params;
+  const data = state.glyphs[state.currentChar];
+  if (!data) return;
+  const from = data[r * cols + c] ? 1 : 0;
+  const stack = [[r, c]];
+  while (stack.length) {
+    const [y, x] = stack.pop();
+    if (y < 0 || y >= rows || x < 0 || x >= cols || (data[y * cols + x] ? 1 : 0) !== from) continue;
+    data[y * cols + x] = from ? 0 : 1;
+    stack.push([y + 1, x], [y - 1, x], [y, x + 1], [y, x - 1]);
+  }
+  buildGridEditor();
+  refreshCurrentChar();
 }
 
 function initEditorEvents() {
-  const editor = document.getElementById('grid-editor');
+  const editor = $('grid-editor');
+  const cellFromPoint = (e) => document.elementFromPoint(e.clientX, e.clientY)?.closest('#grid-editor .grid-cell');
 
-  editor.addEventListener('mousedown', (e) => {
+  editor.addEventListener('pointerdown', (e) => {
+    if (drag || (e.pointerType === 'mouse' && e.button !== 0)) return;
     const cell = e.target.closest('.grid-cell');
     if (!cell) return;
     e.preventDefault();
-    editor.focus();
+    editor.focus({ preventScroll: true });
+    const r = +cell.dataset.r, c = +cell.dataset.c;
     saveUndo();
-    isDragging = true;
-    const r = parseInt(cell.dataset.r);
-    const c = parseInt(cell.dataset.c);
-    const current = state.glyphs[state.currentChar][r * state.params.cols + c];
-    drawValue = current ? 0 : 1;
     setCellFocus(r, c);
-    toggleCellAt(r, c, drawValue);
+    if (fillMode) { floodFill(r, c); return; }
+    const current = state.glyphs[state.currentChar][r * state.params.cols + c];
+    drag = { id: e.pointerId, value: current ? 0 : 1, last: cell };
+    try { editor.setPointerCapture(e.pointerId); } catch {}
+    toggleCellAt(r, c, drag.value);
   });
 
-  editor.addEventListener('mousemove', (e) => {
-    if (!isDragging) return;
-    const el = document.elementFromPoint(e.clientX, e.clientY);
-    const cell = el?.closest('#grid-editor .grid-cell');
-    if (!cell) return;
-    toggleCellAt(parseInt(cell.dataset.r), parseInt(cell.dataset.c), drawValue);
+  editor.addEventListener('pointermove', (e) => {
+    if (!drag || e.pointerId !== drag.id) return;
+    const cell = cellFromPoint(e);
+    if (!cell || cell === drag.last) return;
+    drag.last = cell;
+    toggleCellAt(+cell.dataset.r, +cell.dataset.c, drag.value);
   });
 
-  document.addEventListener('mouseup', () => { isDragging = false; });
-
-  // Touch support
-  editor.addEventListener('touchstart', (e) => {
-    const touch = e.touches[0];
-    const el = document.elementFromPoint(touch.clientX, touch.clientY);
-    const cell = el?.closest('.grid-cell');
-    if (!cell) return;
-    e.preventDefault();
-    saveUndo();
-    isDragging = true;
-    const r = parseInt(cell.dataset.r);
-    const c = parseInt(cell.dataset.c);
-    const current = state.glyphs[state.currentChar][r * state.params.cols + c];
-    drawValue = current ? 0 : 1;
-    setCellFocus(r, c);
-    toggleCellAt(r, c, drawValue);
-  }, { passive: false });
-
-  editor.addEventListener('touchmove', (e) => {
-    if (!isDragging) return;
-    e.preventDefault();
-    const touch = e.touches[0];
-    const el = document.elementFromPoint(touch.clientX, touch.clientY);
-    const cell = el?.closest('#grid-editor .grid-cell');
-    if (!cell) return;
-    toggleCellAt(parseInt(cell.dataset.r), parseInt(cell.dataset.c), drawValue);
-  }, { passive: false });
-
-  editor.addEventListener('touchend', () => { isDragging = false; });
+  // A drag can end in several ways; every one of them must release the pen.
+  const endDrag = (e) => { if (drag && (e.pointerId === undefined || e.pointerId === drag.id)) drag = null; };
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) editor.addEventListener(type, endDrag);
+  window.addEventListener('blur', () => { drag = null; });
 
   // Keyboard navigation
   editor.addEventListener('keydown', (e) => {
+    if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
     const { r, c } = focusedCell;
     const { cols } = state.params;
     switch (e.key) {
@@ -469,8 +626,8 @@ function initEditorEvents() {
         const data = state.glyphs[state.currentChar];
         if (!data) break;
         saveUndo();
-        const cur = data[r * cols + c];
-        toggleCellAt(r, c, cur ? 0 : 1);
+        if (fillMode) floodFill(r, c);
+        else toggleCellAt(r, c, data[r * cols + c] ? 0 : 1);
         break;
       }
     }
@@ -481,16 +638,22 @@ function initEditorEvents() {
 //  Transform tools
 // ─────────────────────────────────────────────
 
-function applyTransform(fn) {
+/** Apply a drawing transform to the current character, or to every character. */
+function applyTransform(fn, all) {
   saveUndo();
+  const before = undoStack[undoStack.length - 1];
   const { cols, rows } = state.params;
-  state.glyphs[state.currentChar] = fn(state.glyphs[state.currentChar], cols, rows);
+  const targets = all ? Object.keys(state.glyphs) : [state.currentChar];
+  for (const char of targets) state.glyphs[char] = fn(state.glyphs[char], cols, rows);
   buildGridEditor();
-  syncGridAccessibility();
   renderEditorPreview();
-  renderPreviewStrip(state.currentChar);
+  renderCharMap(all ? undefined : state.currentChar);
   scheduleTypeTester();
+  if (all) offerProjectUndo(`Applied to all ${targets.length} characters`, before);
 }
+
+function invertGlyph(data) { return data.map(v => (v ? 0 : 1)); }
+function clearGlyph(data) { return data.map(() => 0); }
 
 function flipH(data, cols, rows) {
   const out = new Array(cols * rows).fill(0);
@@ -592,8 +755,8 @@ function copyCurrentChar() {
   clipboard = [...state.glyphs[state.currentChar]];
   clipboardCols = cols;
   clipboardRows = rows;
-  const btn = document.getElementById('btn-paste');
-  if (btn) btn.disabled = false;
+  $('btn-paste').disabled = false;
+  showToast(`Copied the drawing of “${state.currentChar}”`, 2500);
 }
 
 function pasteCurrentChar() {
@@ -604,119 +767,142 @@ function pasteCurrentChar() {
     ? [...clipboard]
     : scaleGlyph(clipboard, clipboardCols, clipboardRows, cols, rows);
   buildGridEditor();
-  syncGridAccessibility();
-  renderEditorPreview();
-  renderPreviewStrip(state.currentChar);
-  scheduleTypeTester();
+  refreshCurrentChar();
 }
 
 // ─────────────────────────────────────────────
-//  Editor toolbar (transform + tools)
+//  Icons (16px, one stroke weight)
+// ─────────────────────────────────────────────
+
+const ICON_PATHS = {
+  flipH:    '<path d="M8 2v12" stroke-dasharray="2 2"/><path d="M5.5 5 2.5 8l3 3zM10.5 5l3 3-3 3z"/>',
+  flipV:    '<path d="M2 8h12" stroke-dasharray="2 2"/><path d="M5 5.5 8 2.5l3 3zM5 10.5l3 3 3-3z"/>',
+  left:     '<path d="M13 8H3M7 4 3 8l4 4"/>',
+  right:    '<path d="M3 8h10M9 4l4 4-4 4"/>',
+  up:       '<path d="M8 13V3M4 7l4-4 4 4"/>',
+  down:     '<path d="M8 3v10M4 9l4 4 4-4"/>',
+  rotate:   '<path d="M13 8a5 5 0 1 1-1.6-3.7M13 2.5V5h-2.5"/>',
+  invert:   '<rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M8 2.5h4.5a1 1 0 0 1 1 1v9a1 1 0 0 1-1 1H8z" fill="currentColor"/>',
+  clear:    '<rect x="2.5" y="2.5" width="11" height="11" rx="1"/><path d="M6 6l4 4M10 6l-4 4"/>',
+  copy:     '<rect x="5.5" y="5.5" width="8" height="8" rx="1"/><path d="M3 10.5V3.5a1 1 0 0 1 1-1h6.5"/>',
+  paste:    '<path d="M5.5 3.5h-2v10h9v-10h-2"/><rect x="5.5" y="2" width="5" height="3" rx="1"/>',
+  symmetry: '<path d="M8 2v12"/><path d="M5.5 5v6M3 7v2M10.5 5v6M13 7v2"/>',
+  fill:     '<path d="M7 2.5l5.5 5.5-4 4a1.4 1.4 0 0 1-2 0L3 8.5z"/><path d="M3 8.5h9"/><path d="M13.5 11.5v1.5"/>',
+  guides:   '<path d="M2 4h12M2 12h12"/><path d="M2 8h12" stroke-dasharray="2 2"/>',
+  reset:    '<path d="M3 8a5 5 0 1 0 1.6-3.7M3 2.5V5h2.5"/>',
+  prev:     '<path d="M10 3 5 8l5 5"/>',
+  next:     '<path d="M6 3l5 5-5 5"/>',
+  chevron:  '<path d="M4 6l4 4 4-4"/>',
+  close:    '<path d="M4 4l8 8M12 4l-8 8"/>',
+  help:     '<circle cx="8" cy="8" r="6"/><path d="M6.3 6.3a1.8 1.8 0 1 1 2.6 1.6c-.6.4-.9.7-.9 1.4"/><path d="M8 11.4v.2"/>',
+  sun:      '<circle cx="8" cy="8" r="2.8"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/>',
+  moon:     '<path d="M13 9.5A5.5 5.5 0 0 1 6.5 3 5.5 5.5 0 1 0 13 9.5z"/>',
+};
+
+function icon(name) {
+  return `<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name]}</svg>`;
+}
+
+function setPressed(btn, on) {
+  btn.classList.toggle('active', on);
+  btn.setAttribute('aria-pressed', String(on));
+}
+
+// ─────────────────────────────────────────────
+//  Editor toolbar
 // ─────────────────────────────────────────────
 
 function buildEditorToolbar() {
-  const existing = document.getElementById('editor-toolbar');
-  if (existing) existing.remove();
+  const tb = $('editor-toolbar');
+  tb.innerHTML = '';
+  // Two groups that wrap as wholes: change the drawing, then how you draw.
+  const newGroup = () => tb.appendChild(Object.assign(document.createElement('div'), { className: 'tool-group' }));
+  let group = newGroup();
 
-  const tb = document.createElement('div');
-  tb.id = 'editor-toolbar';
-  tb.className = 'editor-toolbar';
-
-  const mkBtn = (label, title, onClick) => {
+  const mkBtn = (iconName, label, shortcut, onClick) => {
     const b = document.createElement('button');
-    b.textContent = label;
-    b.title = title;
-    b.setAttribute('aria-label', title);
     b.className = 'tool-btn';
+    if (iconName) b.innerHTML = icon(iconName);
+    b.setAttribute('aria-label', label);
+    b.dataset.tip = shortcut ? `${label} · ${shortcut}` : label;
+    b.tabIndex = -1;
     b.addEventListener('click', onClick);
+    group.appendChild(b);
     return b;
   };
+  const sep = () => group.appendChild(Object.assign(document.createElement('span'), { className: 'toolbar-sep' }));
+  // Shift-click a transform to apply it to every character.
+  const transform = (fn) => (e) => applyTransform(fn, e.shiftKey);
 
-  const mkSep = () => {
-    const s = document.createElement('span');
-    s.className = 'toolbar-sep';
-    return s;
-  };
+  mkBtn('left',  'Shift left',  'Shift+←', transform(shiftLeft));
+  mkBtn('right', 'Shift right', 'Shift+→', transform(shiftRight));
+  mkBtn('up',    'Shift up',    'Shift+↑', transform(shiftUp));
+  mkBtn('down',  'Shift down',  'Shift+↓', transform(shiftDown));
+  sep();
+  mkBtn('flipH',  'Flip horizontally', 'Alt+H', transform(flipH));
+  mkBtn('flipV',  'Flip vertically',   'Alt+V', transform(flipV));
+  mkBtn('rotate', 'Rotate 90°',        'Alt+R', transform(rotate90));
+  mkBtn('invert', 'Invert',            'Alt+I', transform(invertGlyph));
+  sep();
+  mkBtn('copy', 'Copy drawing', 'Ctrl+C', copyCurrentChar);
+  const paste = mkBtn('paste', 'Paste drawing', 'Ctrl+V', pasteCurrentChar);
+  paste.id = 'btn-paste';
+  paste.disabled = !clipboard;
+  group = newGroup();
 
-  // Transform buttons
-  tb.appendChild(mkBtn('↔', 'Flip Horizontal', () => applyTransform(flipH)));
-  tb.appendChild(mkBtn('↕', 'Flip Vertical',   () => applyTransform(flipV)));
-  tb.appendChild(mkSep());
-  tb.appendChild(mkBtn('←', 'Shift Left',  () => applyTransform(shiftLeft)));
-  tb.appendChild(mkBtn('→', 'Shift Right', () => applyTransform(shiftRight)));
-  tb.appendChild(mkBtn('↑', 'Shift Up',    () => applyTransform(shiftUp)));
-  tb.appendChild(mkBtn('↓', 'Shift Down',  () => applyTransform(shiftDown)));
-  tb.appendChild(mkSep());
-  tb.appendChild(mkBtn('↻', 'Rotate 90° CW', () => applyTransform(rotate90)));
-  tb.appendChild(mkSep());
-
-  // Copy / Paste
-  tb.appendChild(mkBtn('⎘', 'Copy Glyph', copyCurrentChar));
-  const pasteBtn = mkBtn('⏎', 'Paste Glyph', pasteCurrentChar);
-  pasteBtn.id = 'btn-paste';
-  pasteBtn.disabled = !clipboard;
-  tb.appendChild(pasteBtn);
-  tb.appendChild(mkSep());
-
-  // Symmetry toggle
-  const symBtn = document.createElement('button');
-  symBtn.id = 'btn-symmetry';
-  symBtn.textContent = '⇔';
-  symBtn.title = 'Symmetry mode (mirror horizontally while drawing)';
-  symBtn.className = 'tool-btn' + (symmetryMode ? ' active' : '');
-  symBtn.addEventListener('click', () => {
-    symmetryMode = !symmetryMode;
-    symBtn.classList.toggle('active', symmetryMode);
+  const sym = mkBtn('symmetry', 'Mirror while drawing', '', () => { symmetryMode = !symmetryMode; setPressed(sym, symmetryMode); });
+  setPressed(sym, symmetryMode);
+  const fill = mkBtn('fill', 'Fill an area', '', () => {
+    fillMode = !fillMode;
+    setPressed(fill, fillMode);
+    $('grid-editor').classList.toggle('fill-mode', fillMode);
   });
-  tb.appendChild(symBtn);
-  tb.appendChild(mkSep());
-
-  // Brush size
-  const brushLabel = document.createElement('span');
-  brushLabel.className = 'toolbar-label';
-  brushLabel.textContent = 'Brush:';
-  tb.appendChild(brushLabel);
+  setPressed(fill, fillMode);
   for (const size of [1, 2, 3]) {
-    const b = document.createElement('button');
-    b.textContent = `${size}×`;
-    b.title = `${size}×${size} brush`;
-    b.className = 'tool-btn' + (brushSize === size ? ' active' : '');
-    b.dataset.brush = size;
-    b.addEventListener('click', () => {
+    const b = mkBtn(null, `Brush ${size}×${size}`, '', () => {
       brushSize = size;
-      tb.querySelectorAll('[data-brush]').forEach(btn =>
-        btn.classList.toggle('active', parseInt(btn.dataset.brush) === size)
-      );
+      tb.querySelectorAll('[data-brush]').forEach(btn => setPressed(btn, +btn.dataset.brush === size));
     });
-    tb.appendChild(b);
+    b.classList.add('text');
+    b.textContent = `${size}×`;
+    b.dataset.brush = size;
+    setPressed(b, brushSize === size);
   }
-  tb.appendChild(mkSep());
+  sep();
 
-  // Guide toggle
-  const guideBtn = document.createElement('button');
-  guideBtn.id = 'btn-guides';
-  guideBtn.textContent = '⊟';
-  guideBtn.title = 'Toggle guide lines';
-  guideBtn.className = 'tool-btn' + (showGuides ? ' active' : '');
-  guideBtn.addEventListener('click', () => {
+  const guide = mkBtn('guides', 'Show guides', '', () => {
     showGuides = !showGuides;
-    guideBtn.classList.toggle('active', showGuides);
+    setPressed(guide, showGuides);
     buildGridEditor();
   });
-  tb.appendChild(guideBtn);
+  setPressed(guide, showGuides);
+  sep();
+  mkBtn('clear', 'Clear drawing', 'Alt+X', () => applyTransform(clearGlyph));
+  mkBtn('reset', 'Reset to the original drawing', '', resetCurrentChar);
 
-  // Insert toolbar before grid editor container
-  const editorCol = document.getElementById('editor-col');
-  const gridEditor = document.getElementById('grid-editor');
-  editorCol.insertBefore(tb, gridEditor);
+  // Toolbar pattern: one tab stop, arrow keys move between tools.
+  const tools = () => [...tb.querySelectorAll('button:not(:disabled)')];
+  tools()[0].tabIndex = 0;
+  tb.addEventListener('keydown', (e) => {
+    const list = tools(), i = list.indexOf(document.activeElement);
+    if (i < 0) return;
+    let next = null;
+    if (e.key === 'ArrowRight') next = list[(i + 1) % list.length];
+    else if (e.key === 'ArrowLeft') next = list[(i - 1 + list.length) % list.length];
+    else if (e.key === 'Home') next = list[0];
+    else if (e.key === 'End') next = list[list.length - 1];
+    if (!next || e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return;
+    e.preventDefault();
+    next.focus();
+  });
+  tb.addEventListener('focusin', (e) => {
+    if (!e.target.matches('button')) return;
+    tb.querySelectorAll('button').forEach(b => { b.tabIndex = b === e.target ? 0 : -1; });
+  });
 }
 
 // ─────────────────────────────────────────────
-//  Parameter controls
-// ─────────────────────────────────────────────
-
-// ─────────────────────────────────────────────
-//  Default style presets
+//  Looks: one-click settings for how the pixels are drawn
 // ─────────────────────────────────────────────
 
 const DEFAULT_STYLES = [
@@ -757,7 +943,7 @@ const DEFAULT_STYLES = [
     params: { cellWidth: 52, cellHeight: 52, gapX: 5,  gapY: 5,  cornerRadius: 14, innerRadius: 0, bridgeRadius: 0, diagWidth: 18, cellShape: 'rect',   cornerMerge: true,  skewX: 0 },
   },
   {
-    name: 'Italic',
+    name: 'Slanted',
     params: { cellWidth: 40, cellHeight: 40, gapX: 3,  gapY: 3,  cornerRadius: 12, innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'rect',   cornerMerge: true,  skewX: -12 },
   },
   {
@@ -872,6 +1058,42 @@ const DEFAULT_STYLES = [
     name: 'Holo Slice',
     params: { cellWidth: 48, cellHeight: 36, gapX: 0, gapY: 10, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'horizontal', cornerMerge: true, skewX: -8, dotSize: 65, showOff: true },
   },
+  {
+    name: 'Trace',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0, gapY: 0, cornerRadius: 5,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'slope',      cornerMerge: true, skewX: 0, dotSize: 45 },
+  },
+  {
+    name: 'Hairline',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0, gapY: 0, cornerRadius: 3,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'slope',      cornerMerge: true, skewX: 0, dotSize: 28 },
+  },
+  {
+    name: 'Circuit',
+    params: { cellWidth: 40, cellHeight: 40, gapX: 0, gapY: 0, cornerRadius: 5,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'slope',      cornerMerge: true, skewX: 0, dotSize: 45, showOff: true },
+  },
+  {
+    name: 'Chisel',
+    params: { cellWidth: 30, cellHeight: 50, gapX: 0, gapY: 0, cornerRadius: 9,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'slope',      cornerMerge: true, skewX: 0 },
+  },
+  {
+    name: 'Seeds',
+    params: { cellWidth: 26, cellHeight: 44, gapX: 8, gapY: 2, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'circle',     cornerMerge: true, skewX: -12 },
+  },
+  {
+    name: 'Rain',
+    params: { cellWidth: 30, cellHeight: 48, gapX: 6, gapY: 0, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'vertical',   cornerMerge: true, skewX: -10 },
+  },
+  {
+    name: 'Barcode',
+    params: { cellWidth: 12, cellHeight: 46, gapX: 9, gapY: 0, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'tile',       cornerMerge: true, skewX: 0 },
+  },
+  {
+    name: 'Argyle',
+    params: { cellWidth: 34, cellHeight: 52, gapX: 0, gapY: 0, cornerRadius: 0,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'diamond',    cornerMerge: true, skewX: 0 },
+  },
+  {
+    name: 'Dominos',
+    params: { cellWidth: 28, cellHeight: 50, gapX: 6, gapY: 6, cornerRadius: 7,  innerRadius: 0, bridgeRadius: 0, diagWidth: 14, cellShape: 'tile',       cornerMerge: true, skewX: 0 },
+  },
 ];
 
 const CELL_SHAPES = [
@@ -880,302 +1102,305 @@ const CELL_SHAPES = [
     ['slope','Slope'],['tile','Tile'],['open','Open'],['dash','Dash'],
 ];
 
-// Params presets don't always list — reset so one preset's effect doesn't leak into the next.
+// Settings a look doesn't always list — reset so one look's effect doesn't leak into the next.
 const PRESET_RESETS = { outline: false, shapeWeight: 50, showOff: false, dotSize: 100, diagFill: false };
 
 const PARAM_DEFS = [
-  { key: 'cellWidth',    label: 'Cell Width',     min: 6,  max: 120, step: 1, type: 'range',    hint: 'Pixel width of each grid cell' },
-  { key: 'cellHeight',   label: 'Cell Height',    min: 6,  max: 120, step: 1, type: 'range',    hint: 'Pixel height of each grid cell' },
-  { key: 'cornerRadius', label: 'Corner Radius',  min: 0,  max: 60,  step: 1, type: 'range',    hint: 'Rounded corner radius on each cell (outer/convex corners)' },
-  { key: 'innerRadius',  label: 'Inner Radius',   min: 0,  max: 30,  step: 1, type: 'range',    hint: 'Smooth fillet at concave inner corners where cells meet at L/T junctions' },
-  { key: 'bridgeRadius', label: 'Bridge Radius',  min: 0,  max: 20,  step: 1, type: 'range',    hint: 'Rounded corners on gap bridge rectangles between cells' },
-  { key: 'gapX',         label: 'Gap H',          min: 0,  max: 40,  step: 1, type: 'range',    hint: 'Horizontal gap between cells' },
-  { key: 'gapY',         label: 'Gap V',          min: 0,  max: 40,  step: 1, type: 'range',    hint: 'Vertical gap between cells' },
-  { key: 'cols',         label: 'Grid Cols',      min: 3,  max: 14,  step: 1, type: 'range',    hint: 'Number of columns in the glyph grid' },
-  { key: 'rows',         label: 'Grid Rows',      min: 3,  max: 16,  step: 1, type: 'range',    hint: 'Number of rows in the glyph grid' },
-  { key: 'padding',      label: 'Export Padding', min: 0,  max: 40,  step: 1, type: 'range',    hint: 'Extra blank space around the glyph in exported SVG' },
-  { key: 'fgColor',      label: 'Foreground',                                 type: 'color',    hint: 'Glyph fill color' },
-  { key: 'bgColor',      label: 'Background',                                 type: 'color',    hint: 'Background fill color (or use transparent)' },
-  { key: 'diagFill',    label: 'Diagonal Fill',                                type: 'checkbox', hint: 'Draw diagonal lines between diagonally adjacent cells' },
-  { key: 'diagWidth',   label: 'Diag Line Width',  min: 1, max: 80,  step: 1, type: 'range',    hint: 'Stroke width of diagonal connector lines' },
-  { key: 'outline',      label: 'Outline',                                      type: 'checkbox', hint: 'Add a border stroke outside the glyph fill — works on top of any style/shape' },
-  { key: 'outlineWidth', label: 'Outline Width',  min: 1,   max: 20,  step: 1, type: 'range',    hint: 'Outline stroke thickness' },
-  { key: 'outlineColor', label: 'Outline Color',                                type: 'color',    hint: 'Color of the outline stroke' },
-  { key: 'charSpacing', label: 'Char Spacing',     min: 0, max: 120, step: 1, type: 'range',    hint: 'Extra horizontal space between characters in the type tester' },
-  { key: 'cornerMerge',    label: 'Join corners',    type: 'checkbox', hint: 'Flatten corners where adjacent cells meet (smoother connected strokes)' },
-  { key: 'lockNodeRadius', label: 'Lock Node Radius', type: 'checkbox', hint: 'Lock circular node to half the smallest cell side (matches prototype). Only applies to Nodes shape.' },
-  { key: 'skewX',        label: 'Skew',           min: -30, max: 30,  step: 1, type: 'range',    hint: 'Italic slant angle in degrees (pure vector transform, exports correctly)' },
-  { key: 'dotSize',      label: 'Pixel fill %',       min: 10,  max: 100, step: 1, type: 'range',    hint: 'Draw each pixel at this % of its cell — thins joined strokes, shrinks separate dots' },
-  { key: 'shapeWeight',  label: 'Stroke weight',   min: 5,   max: 95,  step: 1, type: 'range',    hint: 'Ring thickness, cross arm width or stripe width (% of cell)' },
-  { key: 'showOff',      label: 'Unlit Pixels',                                 type: 'checkbox', hint: 'Draw OFF cells in a dim color (LED / dot-matrix board look)' },
-  { key: 'offColor',     label: 'Unlit Color',                                  type: 'color',    hint: 'Color of the unlit (OFF) cells' },
+  { key: 'cellWidth',    label: 'Pixel width',    min: 6,  max: 120, step: 1, type: 'range',    hint: 'Width of one pixel' },
+  { key: 'cellHeight',   label: 'Pixel height',   min: 6,  max: 120, step: 1, type: 'range',    hint: 'Height of one pixel' },
+  { key: 'cornerRadius', label: 'Corner radius',  min: 0,  max: 60,  step: 1, type: 'range',    hint: 'Rounding of the outer corners of each pixel' },
+  { key: 'innerRadius',  label: 'Inner radius',   min: 0,  max: 30,  step: 1, type: 'range',    hint: 'Smooth fillet at concave inner corners where cells meet at L/T junctions' },
+  { key: 'bridgeRadius', label: 'Bridge radius',  min: 0,  max: 20,  step: 1, type: 'range',    hint: 'Rounding of the bridges that join neighbouring pixels across a gap' },
+  { key: 'gapX',         label: 'Gap between columns', min: 0, max: 40, step: 1, type: 'range',  hint: 'Horizontal space between pixels' },
+  { key: 'gapY',         label: 'Gap between rows', min: 0,  max: 40,  step: 1, type: 'range',   hint: 'Vertical space between pixels' },
+  { key: 'cols',         label: 'Columns',        min: 3,  max: 14,  step: 1, type: 'range',    hint: 'Width of every character, in pixels' },
+  { key: 'rows',         label: 'Rows',           min: 3,  max: 16,  step: 1, type: 'range',    hint: 'Height of every character, in pixels' },
+  { key: 'padding',      label: 'Padding',        min: 0,  max: 40,  step: 1, type: 'range',    hint: 'Blank space around the artwork in exported SVG and PNG' },
+  { key: 'fgColor',      label: 'Foreground',                                 type: 'color',    hint: 'Color of the lettering' },
+  { key: 'bgColor',      label: 'Background',                                 type: 'color',    hint: 'Color behind the lettering' },
+  { key: 'diagFill',    label: 'Join diagonals',                               type: 'checkbox', hint: 'Connects pixels that only touch at a corner.' },
+  { key: 'diagWidth',   label: 'Diagonal width',   min: 1, max: 80,  step: 1, type: 'range',    hint: 'Thickness of the diagonal joins' },
+  { key: 'outline',      label: 'Outline',                                      type: 'checkbox', hint: 'Adds a border around the lettering. Artwork only: a font file leaves it out.' },
+  { key: 'outlineWidth', label: 'Outline width',  min: 1,   max: 20,  step: 1, type: 'range',    hint: 'Thickness of the outline' },
+  { key: 'outlineColor', label: 'Outline color',                                type: 'color',    hint: 'Color of the outline' },
+  { key: 'charSpacing', label: 'Character spacing', min: 0, max: 120, step: 1, type: 'range',   hint: 'Space between characters in text and in the font file' },
+  { key: 'cornerMerge',    label: 'Join corners',    type: 'checkbox', hint: 'Squares off corners where pixels meet, so strokes read as one shape.' },
+  { key: 'lockNodeRadius', label: 'Fully round nodes', type: 'checkbox', hint: 'Keeps each node a full circle. Turn off to set the radius yourself.' },
+  { key: 'skewX',        label: 'Slant',          min: -30, max: 30,  step: 1, type: 'range',    hint: 'Slant angle in degrees. Negative leans right.' },
+  { key: 'dotSize',      label: 'Pixel fill %',       min: 10,  max: 100, step: 1, type: 'range',    hint: 'Draws each pixel at this share of its size: thinner strokes, smaller dots' },
+  { key: 'shapeWeight',  label: 'Stroke weight',   min: 5,   max: 95,  step: 1, type: 'range',    hint: 'Thickness of rings, crosses, stripes, open squares and dashes, as a share of the pixel' },
+  { key: 'showOff',      label: 'Show unlit pixels',                            type: 'checkbox', hint: 'Draws the unlit pixels dimly, like an LED board. Artwork only: a font file leaves them out.' },
+  { key: 'offColor',     label: 'Unlit color',                                  type: 'color',    hint: 'Color of the unlit pixels' },
 ];
 
 const PARAM_GROUPS = [
-  { label: 'Grid',     keys: ['cols', 'rows'],                                                   open: true  },
-  { label: 'Cell',     keys: ['cellWidth', 'cellHeight', 'dotSize'],                                         open: true  },
-  { label: 'Gap',      keys: ['gapX', 'gapY'],                                                    open: false  },
-  { label: 'Rounding', keys: ['cornerRadius', 'bridgeRadius', 'cornerMerge', 'lockNodeRadius'],                    open: false  },
-  { label: 'Style',    keys: ['shapeWeight', 'diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX', 'showOff', 'offColor'], open: false  },
-  { label: 'Color',    keys: ['fgColor', 'bgColor'],                                              open: true  },
-  { label: 'Export',   keys: ['padding'],                                          open: false },
+  { key: 'grid',    label: 'Grid',       keys: ['cols', 'rows'], open: true, note: 'Changing the grid crops or pads every drawing.' },
+  { key: 'size',    label: 'Pixel size', keys: ['cellWidth', 'cellHeight', 'dotSize'], open: true },
+  { key: 'spacing', label: 'Spacing',    keys: ['gapX', 'gapY', 'charSpacing'], open: false },
+  { key: 'corners', label: 'Corners',    keys: ['cornerRadius', 'bridgeRadius', 'cornerMerge', 'lockNodeRadius'], open: false },
+  { key: 'effects', label: 'Effects',    keys: ['shapeWeight', 'diagFill', 'diagWidth', 'outline', 'outlineWidth', 'outlineColor', 'skewX', 'showOff', 'offColor'], open: false },
+  { key: 'color',   label: 'Color',      keys: ['fgColor', 'bgColor'], open: true },
 ];
 
+// Looks shown before "Show all": one of each distinct idea.
+const FEATURED_LOOKS = ['Pixel', 'Rounded', 'Dots', 'Nodes', 'LED', 'Outlined', 'Scanline', 'Slope', 'Slanted'];
+
+// Settings a look controls. Changing one of them makes the look "Custom".
+const LOOK_KEYS = new Set([...Object.keys(PRESET_RESETS), ...DEFAULT_STYLES.flatMap(s => Object.keys(s.params))]);
+
+// ─────────────────────────────────────────────
+//  Settings panel
+// ─────────────────────────────────────────────
+
+const sectionValues = {};
+
+/** A collapsible settings section. Returns its body element. */
+function addSection(panel, key, title, defaultOpen) {
+  const section = document.createElement('div');
+  section.className = 'param-section';
+  const header = document.createElement('button');
+  header.className = 'section-hdr';
+  header.innerHTML = `<span class="section-title"></span><span class="section-value"></span>${icon('chevron')}`;
+  header.querySelector('.section-title').textContent = title;
+  sectionValues[key] = header.querySelector('.section-value');
+  const body = document.createElement('div');
+  body.className = 'section-body';
+  body.id = `section-${key}`;
+  header.setAttribute('aria-controls', body.id);
+
+  let open = defaultOpen;
+  try { const saved = localStorage.getItem(`pfg-panel-${key}`); if (saved !== null) open = saved === 'true'; } catch {}
+  const update = () => { header.setAttribute('aria-expanded', String(open)); body.hidden = !open; };
+  header.addEventListener('click', () => {
+    open = !open;
+    update();
+    try { localStorage.setItem(`pfg-panel-${key}`, String(open)); } catch {}
+  });
+  update();
+
+  section.append(header, body);
+  panel.appendChild(section);
+  return body;
+}
+
+/** The current choice, shown in a section header so it reads while collapsed. */
+function setSectionValue(key, text) {
+  if (sectionValues[key]) sectionValues[key].textContent = text;
+}
+
+function hint(text) {
+  return Object.assign(document.createElement('p'), { className: 'control-hint', textContent: text });
+}
+
 function buildParamControls() {
-  const panel = document.getElementById('params-panel');
-  panel.innerHTML = '<h2>Parameters</h2>';
+  const panel = $('params-panel');
+  panel.innerHTML = '<h2 class="visually-hidden">Settings</h2>';
 
-  // ── Character styles ───────────────────────
-  const charStyleSection = document.createElement('div');
-  charStyleSection.className = 'presets-section';
+  // ── Looks ──────────────────────────────────
+  const looks = addSection(panel, 'looks', 'Look', true);
+  const looksGrid = document.createElement('div');
+  looksGrid.className = 'option-grid three looks-grid';
+  const ordered = [
+    ...FEATURED_LOOKS.map(name => DEFAULT_STYLES.find(s => s.name === name)),
+    ...DEFAULT_STYLES.filter(s => !FEATURED_LOOKS.includes(s.name)),
+  ];
+  for (const preset of ordered) {
+    const btn = document.createElement('button');
+    btn.className = 'look-btn' + (FEATURED_LOOKS.includes(preset.name) ? '' : ' extra');
+    btn.dataset.preset = preset.name;
+    btn.innerHTML = '<span class="look-thumb" aria-hidden="true"></span><span class="look-name"></span>';
+    btn.querySelector('.look-name').textContent = preset.name;
+    btn.addEventListener('click', () => applyPreset(preset));
+    looksGrid.appendChild(btn);
+  }
+  const more = document.createElement('button');
+  more.className = 'link-btn';
+  let showAll = false;
+  try { showAll = localStorage.getItem('pfg-looks-all') === 'true'; } catch {}
+  const updateMore = () => {
+    looksGrid.classList.toggle('all', showAll);
+    more.textContent = showAll ? 'Show fewer looks' : `Show all ${DEFAULT_STYLES.length} looks`;
+    more.setAttribute('aria-expanded', String(showAll));
+  };
+  more.addEventListener('click', () => {
+    showAll = !showAll;
+    updateMore();
+    try { localStorage.setItem('pfg-looks-all', String(showAll)); } catch {}
+  });
+  updateMore();
+  looks.append(looksGrid, more);
 
-  const charStyleLabel = document.createElement('div');
-  charStyleLabel.className = 'presets-label';
-  charStyleLabel.textContent = 'Base Characters';
-  charStyleSection.appendChild(charStyleLabel);
-
-  const charStyleGrid = document.createElement('div');
-  charStyleGrid.className = 'presets-grid char-style-grid';
-
+  // ── Letterforms ────────────────────────────
+  const letters = addSection(panel, 'letterforms', 'Letterforms', false);
+  letters.appendChild(hint('Choosing a set replaces every drawing. Choose the current set again to start over.'));
+  const lettersGrid = document.createElement('div');
+  lettersGrid.className = 'option-grid';
   for (const style of CHAR_STYLES) {
     const btn = document.createElement('button');
-    btn.className = 'preset-btn char-style-btn';
+    btn.className = 'option-btn char-style-btn';
     btn.dataset.style = style.name;
     btn.textContent = style.name;
-    if (style.name === 'Classic') btn.classList.add('active');
     btn.addEventListener('click', () => applyCharStyle(style));
-    charStyleGrid.appendChild(btn);
+    lettersGrid.appendChild(btn);
   }
+  letters.appendChild(lettersGrid);
 
-  charStyleSection.appendChild(Object.assign(document.createElement('p'), {className: 'control-hint', textContent: 'Replaces all character drawings and may change the grid size.'}));
-  charStyleSection.appendChild(charStyleGrid);
-  panel.appendChild(charStyleSection);
-
-  // ── Style presets ──────────────────────────
-  const presetsSection = document.createElement('div');
-  presetsSection.className = 'presets-section';
-
-  const presetsLabel = document.createElement('div');
-  presetsLabel.className = 'presets-label';
-  presetsLabel.textContent = 'Presets';
-  presetsSection.appendChild(presetsLabel);
-
-  const presetsGrid = document.createElement('div');
-  presetsGrid.className = 'presets-grid';
-
-  for (const preset of DEFAULT_STYLES) {
-    const btn = document.createElement('button');
-    btn.className = 'preset-btn';
-    btn.textContent = preset.name;
-    btn.dataset.preset = preset.name;
-    btn.title = preset.name + '\n' + Object.entries(preset.params)
-      .map(([k, v]) => `${k}: ${v}`)
-      .join('\n');
-    btn.addEventListener('click', () => applyPreset(preset));
-    presetsGrid.appendChild(btn);
-  }
-
-  presetsSection.appendChild(presetsGrid);
-  panel.appendChild(presetsSection);
-
-  // ── Cell shape ─────────────────────────────
-  const shapeSection = document.createElement('div');
-  shapeSection.className = 'presets-section';
-
-  const shapeLabel = document.createElement('div');
-  shapeLabel.className = 'presets-label';
-  shapeLabel.textContent = 'Cell Shape';
-  shapeSection.appendChild(shapeLabel);
-
+  // ── Pixel shape ────────────────────────────
+  const shapes = addSection(panel, 'shape', 'Pixel shape', false);
   const shapeGrid = document.createElement('div');
-  shapeGrid.className = 'presets-grid char-style-grid';
-
+  shapeGrid.className = 'option-grid three';
   for (const [shape, label] of CELL_SHAPES) {
     const btn = document.createElement('button');
-    btn.className = 'preset-btn cell-shape-btn';
+    btn.className = 'option-btn cell-shape-btn';
     btn.dataset.shape = shape;
     btn.textContent = label;
-    if (state.params.cellShape === shape) btn.classList.add('active');
     btn.addEventListener('click', () => applyCellShape(shape));
     shapeGrid.appendChild(btn);
   }
+  shapes.appendChild(shapeGrid);
 
-  shapeSection.appendChild(shapeGrid);
-  panel.appendChild(shapeSection);
-
+  // ── Parameter groups ───────────────────────
   for (const group of PARAM_GROUPS) {
-    const section = document.createElement('div');
-    section.className = 'param-section' + (group.open ? '' : ' collapsed');
+    const body = addSection(panel, group.key, group.label, group.open);
+    if (group.note) body.appendChild(hint(group.note));
+    const rows = group.keys.map(key => buildParamRow(PARAM_DEFS.find(d => d.key === key)));
 
-    const hdr = document.createElement('button');
-    hdr.className = 'param-section-hdr';
-    hdr.innerHTML = `<span class="param-section-label">${group.label}</span><span class="param-section-arrow">▾</span>`;
-    // Accordion behaviour is attached after all controls are built.
-
-    const body = document.createElement('div');
-    body.className = 'param-section-body';
-
-    for (const key of group.keys) {
-      const def = PARAM_DEFS.find(d => d.key === key);
-      if (!def) continue;
-
-      const wrap = document.createElement('div');
-      wrap.className = 'param-row';
-      wrap.dataset.paramKey = def.key;
-
-      const label = document.createElement('label');
-      label.htmlFor = `param-${def.key}`;
-
-      if (def.type === 'range') {
-        label.innerHTML = `${def.label}: <span class="param-val" id="param-val-${def.key}">${state.params[def.key]}</span>`;
-        if (def.hint) label.title = def.hint;
-        wrap.appendChild(label);
-
-        const slider = document.createElement('input');
-        slider.type = 'range';
-        slider.id = `param-${def.key}`;
-        slider.min = def.min;
-        slider.max = def.max;
-        slider.step = def.step;
-        slider.value = state.params[def.key];
-        if (def.hint) slider.title = `${def.hint} (${state.params[def.key]})`;
-
-        const numInput = document.createElement('input');
-        numInput.type = 'number';
-        numInput.setAttribute('aria-label', def.label);
-        numInput.className = 'param-num';
-        numInput.dataset.key = def.key;
-        numInput.min = def.min;
-        numInput.max = def.max;
-        numInput.step = def.step;
-        numInput.value = state.params[def.key];
-
-        // One undo step per drag: opened on the first input, closed on change
-        slider.addEventListener('input', () => {
-          beginParamEdit(def.key);
-          numInput.value = slider.value;
-          const badge = document.getElementById(`param-val-${def.key}`);
-          if (badge) badge.textContent = slider.value;
-          if (def.hint) slider.title = `${def.hint} (${slider.value})`;
-          applyParam(def.key, Number(slider.value));
-        });
-        slider.addEventListener('change', endParamEdit);
-        numInput.addEventListener('change', () => {
-          const v = Math.min(def.max, Math.max(def.min, Number(numInput.value)));
-          slider.value = v;
-          numInput.value = v;
-          const badge = document.getElementById(`param-val-${def.key}`);
-          if (badge) badge.textContent = v;
-          beginParamEdit(def.key);
-          applyParam(def.key, v);
-          endParamEdit();
-        });
-
-        wrap.appendChild(slider);
-        wrap.appendChild(numInput);
-
-      } else if (def.type === 'color') {
-        label.textContent = def.label;
-        wrap.appendChild(label);
-
-        const picker = document.createElement('input');
-        picker.type = 'color';
-        picker.id = `param-${def.key}`;
-        picker.value = state.params[def.key];
-        picker.addEventListener('input', () => {
-          beginParamEdit(def.key);
-          applyParam(def.key, picker.value);
-        });
-        picker.addEventListener('change', endParamEdit);
-        wrap.appendChild(picker);
-
-      } else if (def.type === 'checkbox') {
-        const row = document.createElement('div');
-        row.className = 'param-checkbox-row';
-
-        const checkbox = document.createElement('input');
-        checkbox.type = 'checkbox';
-        checkbox.id = `param-${def.key}`;
-        checkbox.checked = !!state.params[def.key];
-        checkbox.addEventListener('change', () => {
-          beginParamEdit(def.key);
-          applyParam(def.key, checkbox.checked);
-          endParamEdit();
-        });
-
-        label.textContent = def.label;
-        if (def.hint) {
-          const hint = Object.assign(document.createElement('p'), {id: `hint-${def.key}`, className: 'control-hint', textContent: def.hint});
-          checkbox.setAttribute('aria-describedby', hint.id);
-          wrap.appendChild(hint);
-        }
-        row.appendChild(checkbox);
-        row.appendChild(label);
-        wrap.appendChild(row);
-      }
-
-      body.appendChild(wrap);
+    if (group.key === 'color') {
+      const pair = document.createElement('div');
+      pair.className = 'param-pair';
+      pair.append(...rows);
+      const swap = Object.assign(document.createElement('button'), { textContent: 'Swap colors' });
+      swap.addEventListener('click', () => {
+        saveUndo();
+        [state.params.fgColor, state.params.bgColor] = [state.params.bgColor, state.params.fgColor];
+        syncParamControls();
+        render();
+      });
+      body.append(pair, swap);
+    } else {
+      body.append(...rows);
     }
 
-    section.appendChild(hdr);
-    section.appendChild(body);
-    panel.appendChild(section);
+    if (group.key === 'size') body.append(...buildFitHeight());
   }
+}
 
-  // Generate Defaults button — scales 5×7 base font to current grid size
-  const defaultRow = document.createElement('div');
-  defaultRow.className = 'param-row';
-  const defaultBtn = document.createElement('button');
-  defaultBtn.textContent = 'Regenerate characters';
-  defaultBtn.className = 'primary';
-  defaultBtn.style.width = '100%';
-  defaultBtn.title = 'Scale the built-in 5×7 character set to the current grid dimensions';
-  defaultBtn.addEventListener('click', () => {
-    resetAll();
-    buildGridEditor();
-    render();
+function buildParamRow(def) {
+  const wrap = document.createElement('div');
+  wrap.className = 'param-row';
+  wrap.dataset.paramKey = def.key;
+  const label = document.createElement('label');
+  label.htmlFor = `param-${def.key}`;
+  label.textContent = def.label;
+
+  if (def.type === 'range') {
+    if (def.hint) label.title = def.hint;
+    const slider = document.createElement('input');
+    slider.type = 'range';
+    slider.id = `param-${def.key}`;
+    slider.min = def.min; slider.max = def.max; slider.step = def.step;
+    slider.value = state.params[def.key];
+
+    const numInput = document.createElement('input');
+    numInput.type = 'number';
+    numInput.setAttribute('aria-label', `${def.label}, exact value`);
+    numInput.className = 'param-num';
+    numInput.dataset.key = def.key;
+    numInput.min = def.min; numInput.max = def.max; numInput.step = def.step;
+    numInput.value = state.params[def.key];
+
+    // One undo step per drag: opened on the first input, closed on change
+    slider.addEventListener('input', () => {
+      beginParamEdit(def.key);
+      numInput.value = slider.value;
+      applyParam(def.key, Number(slider.value));
+    });
+    slider.addEventListener('change', endParamEdit);
+    numInput.addEventListener('change', () => {
+      // An empty or out-of-range entry snaps to the nearest allowed value.
+      const typed = numInput.value === '' ? state.params[def.key] : Number(numInput.value);
+      const v = Math.min(def.max, Math.max(def.min, Math.round(typed)));
+      slider.value = v;
+      numInput.value = v;
+      beginParamEdit(def.key);
+      applyParam(def.key, v);
+      endParamEdit();
+    });
+
+    const head = document.createElement('div');
+    head.className = 'param-head';
+    head.append(label, numInput);
+    wrap.append(head, slider);
+
+  } else if (def.type === 'color') {
+    const picker = document.createElement('input');
+    picker.type = 'color';
+    picker.id = `param-${def.key}`;
+    picker.value = state.params[def.key];
+    picker.addEventListener('input', () => {
+      beginParamEdit(def.key);
+      applyParam(def.key, picker.value);
+    });
+    picker.addEventListener('change', endParamEdit);
+    wrap.append(label, picker);
+
+  } else if (def.type === 'checkbox') {
+    const row = document.createElement('div');
+    row.className = 'param-checkbox-row';
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.id = `param-${def.key}`;
+    checkbox.checked = !!state.params[def.key];
+    checkbox.addEventListener('change', () => {
+      beginParamEdit(def.key);
+      applyParam(def.key, checkbox.checked);
+      endParamEdit();
+    });
+    row.append(checkbox, label);
+    wrap.appendChild(row);
+    if (def.hint) {
+      const note = hint(def.hint);
+      note.id = `hint-${def.key}`;
+      checkbox.setAttribute('aria-describedby', note.id);
+      wrap.appendChild(note);
+    }
+  }
+  return wrap;
+}
+
+/** "Total height": derive pixel size, gaps and corners from one target height. */
+function buildFitHeight() {
+  const row = document.createElement('div');
+  row.className = 'fit-row';
+  const field = document.createElement('div');
+  field.className = 'param-row';
+  const label = Object.assign(document.createElement('label'), { htmlFor: 'autoscale-height', textContent: 'Total height (px)' });
+  const input = document.createElement('input');
+  input.type = 'number';
+  input.id = 'autoscale-height';
+  input.className = 'param-num';
+  input.min = 20; input.max = 2000;
+  input.value = computeCharHeight();
+  field.append(label, input);
+
+  const btn = Object.assign(document.createElement('button'), { textContent: 'Resize' });
+  btn.addEventListener('click', () => {
+    const h = Math.round(Number(input.value));
+    if (input.value === '' || !Number.isFinite(h) || h < 20 || h > 2000) {
+      showToast('Enter a total height between 20 and 2000 pixels.');
+      input.focus();
+      return;
+    }
+    autoGenerate(h);
   });
-  defaultRow.appendChild(defaultBtn);
-  panel.appendChild(defaultRow);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter') btn.click(); });
+  row.append(field, btn);
+  return [row, hint('Resizes pixels, gaps and corners together to reach this height.')];
+}
 
-  // Auto-size section
-  const autoRow = document.createElement('div');
-  autoRow.className = 'param-row autoscale-row';
-
-  const autoLabel = document.createElement('label');
-  autoLabel.textContent = 'Auto-size height (px)';
-  autoLabel.htmlFor = 'autoscale-height';
-  autoRow.appendChild(autoLabel);
-
-  const autoControls = document.createElement('div');
-  autoControls.className = 'autoscale-controls';
-
-  const heightInput = document.createElement('input');
-  heightInput.type = 'number';
-  heightInput.id = 'autoscale-height';
-  heightInput.className = 'param-num';
-  heightInput.min = 20;
-  heightInput.max = 2000;
-  heightInput.placeholder = 'height px';
-  heightInput.title = 'Target total character height in pixels';
-  // Pre-fill with the current rendered character height
-  heightInput.value = computeCharHeight();
-
-  const genBtn = document.createElement('button');
-  genBtn.textContent = 'Generate';
-  genBtn.className = 'primary';
-  genBtn.addEventListener('click', () => {
-    const h = parseInt(heightInput.value);
-    if (!isNaN(h) && h > 0) autoGenerate(h);
-  });
-  heightInput.addEventListener('keydown', e => {
-    if (e.key === 'Enter') genBtn.click();
-  });
-
-  autoControls.appendChild(heightInput);
-  autoControls.appendChild(genBtn);
-  autoRow.appendChild(autoControls);
-  panel.appendChild(autoRow);
+function syncFitHeight() {
+  const input = $('autoscale-height');
+  if (input) input.value = computeCharHeight();
 }
 
 /** Total rendered height of a character at current params (no padding). */
@@ -1190,58 +1415,66 @@ function computeCharHeight() {
  * Uses a fixed 10% gap-to-cell ratio and 28% corner radius ratio.
  */
 function autoGenerate(targetHeight) {
-  clearPreset();
-  const { cols, rows } = state.params;
+  const { rows } = state.params;
 
   // Solve: targetHeight = rows * cellH + (rows-1) * gap,  gap = cellH * gapRatio
-  const gapRatio   = 0.1;
-  const cellH = Math.max(4, Math.round(targetHeight / (rows + (rows - 1) * gapRatio)));
+  const gapRatio = 0.1;
+  const cellH = Math.min(120, Math.max(6, Math.round(targetHeight / (rows + (rows - 1) * gapRatio))));
   const gap   = Math.max(0, Math.round(cellH * gapRatio));
-  const cellW = cellH;
-  const radius = Math.min(Math.floor(cellH / 2), Math.round(cellH * 0.28));
-  const dw     = Math.round(cellH * 0.28);
 
   saveUndo();
   Object.assign(state.params, {
-    cellWidth:    cellW,
+    cellWidth:    cellH,
     cellHeight:   cellH,
     gapX:         gap,
     gapY:         gap,
-    cornerRadius: radius,
-    diagWidth:    dw,
+    cornerRadius: Math.min(Math.floor(cellH / 2), Math.round(cellH * 0.28)),
+    diagWidth:    Math.round(cellH * 0.28),
   });
-
+  if (state.params.cellShape === 'nodes') { state.params.gapX = 0; state.params.gapY = 0; }
+  setLook(null);
   syncParamControls();
   render();
+  syncFitHeight();   // show the height that was actually reached
+}
 
-  // Keep the height input in sync with the real rendered height
-  const input = document.getElementById('autoscale-height');
-  if (input) input.value = computeCharHeight();
+// ─────────────────────────────────────────────
+//  Letterforms, looks, pixel shape
+// ─────────────────────────────────────────────
+
+function setActiveCharStyle(name) {
+  state.charStyle = name;
+  document.querySelectorAll('.char-style-btn').forEach(b => setPressed(b, b.dataset.style === name));
+  setSectionValue('letterforms', name);
+}
+
+function setLook(name) {
+  state.look = name;
+  document.querySelectorAll('.look-btn').forEach(b => setPressed(b, b.dataset.preset === name));
+  setSectionValue('looks', name || 'Custom');
 }
 
 function applyCharStyle(style) {
   saveUndo();
-  offerProjectUndo('Replaced base characters', undoStack[undoStack.length - 1]);
+  const before = undoStack[undoStack.length - 1];
   const styleCols = style.cols ?? FONT_COLS;
   const styleRows = style.rows ?? FONT_ROWS;
-  // While the grid is still some style's native size (user hasn't customised it),
-  // switch to this style's native grid — e.g. Condensed → 4×7, back to 5×7 after.
+  // While the grid is still some set's native size (not customised), switch to
+  // this set's native grid — e.g. Condensed → 4×7, back to 5×7 after.
   const onNativeGrid = CHAR_STYLES.some(s =>
     (s.cols ?? FONT_COLS) === state.params.cols && (s.rows ?? FONT_ROWS) === state.params.rows);
   if (onNativeGrid) {
-    if (state.params.cols !== styleCols || state.params.rows !== styleRows) clearPreset();
     state.params.cols = styleCols;
     state.params.rows = styleRows;
-    syncParamControls();
   }
   const { cols, rows } = state.params;
-  // Apply style glyphs for all chars in state — fall back to the closest built-in
-  // map (then FONT_DATA) for chars the style doesn't define.
-  const fallbackMap = bestFontSource(styleCols, styleRows);
+  // Classic has purpose-drawn small sizes; every other set scales from its own grid.
+  const own = style.name === 'Classic' ? bestFontSource(cols, rows) : { data: style.data, cols: styleCols, rows: styleRows };
+  const fallback = bestFontSource(styleCols, styleRows);
   for (const char of Object.keys(state.glyphs)) {
-    let srcData = style.data[char], sc = styleCols, sr = styleRows;
-    if (!srcData && fallbackMap.data[char]) {
-      srcData = fallbackMap.data[char]; sc = fallbackMap.cols; sr = fallbackMap.rows;
+    let srcData = own.data[char], sc = own.cols, sr = own.rows;
+    if (!srcData && fallback.data[char]) {
+      srcData = fallback.data[char]; sc = fallback.cols; sr = fallback.rows;
     } else if (!srcData) {
       srcData = FONT_DATA[char]; sc = FONT_COLS; sr = FONT_ROWS;
     }
@@ -1250,119 +1483,79 @@ function applyCharStyle(style) {
       ? [...srcData]
       : scaleGlyph(srcData, sc, sr, cols, rows);
   }
+  state.pristine = copyGlyphs(state.glyphs);
   setActiveCharStyle(style.name);
-  buildGridEditor();
-  render();
+  syncParamControls();
+  syncFitHeight();
+  refreshAll();
+  offerProjectUndo(`Replaced every drawing with the ${style.name} letterforms`, before);
 }
 
 function applyCellShape(shape) {
-  clearPreset();
   saveUndo();
   state.params.cellShape = shape;
-  document.querySelectorAll('.cell-shape-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.shape === shape);
-  });
   if (shape === 'nodes') {
-    // Force square cells and no gap
+    // Nodes need square pixels and no gap
     state.params.gapX = 0;
     state.params.gapY = 0;
     state.params.cellHeight = state.params.cellWidth;
-    syncParamControls();
   }
-  updateConditionalParams();
-  renderEditorPreview();
-  renderPreviewStrip();
-  renderTypeTester();
+  setLook(null);
+  syncParamControls();
+  syncFitHeight();
+  render();
 }
 
-
 function applyPreset(preset) {
-  clearPreset();
   saveUndo();
   Object.assign(state.params, PRESET_RESETS, preset.params);
-  document.querySelectorAll('.preset-btn').forEach(b => { if (b.dataset.preset === preset.name) b.classList.add('active'); });
   if (preset.params.lockNodeRadius === undefined) state.params.lockNodeRadius = true;
   // Clamp cornerRadius to cell size
   const maxRad = Math.floor(Math.min(state.params.cellWidth, state.params.cellHeight) / 2);
   state.params.cornerRadius = Math.min(state.params.cornerRadius, maxRad);
+  setLook(preset.name);
   syncParamControls();
-  syncShapeButtons();
+  syncFitHeight();
   render();
-  // Update autoscale height display
-  const input = document.getElementById('autoscale-height');
-  if (input) input.value = computeCharHeight();
 }
 
 function applyParam(key, value) {
-  clearPreset();
+  if (LOOK_KEYS.has(key) && state.look) setLook(null);
   const oldCols = state.params.cols;
   const oldRows = state.params.rows;
   state.params[key] = value;
 
   if (key === 'cols' || key === 'rows') {
+    const { cols, rows } = state.params;
     const base = paramEdit && paramEdit.base;
-    if (base) {
-      // Resize from the drag-start glyphs so shrinking then growing loses nothing
-      for (const char of Object.keys(base.glyphs)) {
-        state.glyphs[char] = resizeGlyph(base.glyphs[char], base.cols, base.rows,
-          state.params.cols, state.params.rows);
-      }
-    } else {
-      resizeAllGlyphs(oldCols, oldRows, state.params.cols, state.params.rows);
+    // Resize from the drag-start drawings so shrinking then growing loses nothing
+    const from = base || { cols: oldCols, rows: oldRows, glyphs: state.glyphs, pristine: state.pristine };
+    for (const set of ['glyphs', 'pristine']) {
+      state[set] = Object.fromEntries(Object.entries(from[set]).map(([char, data]) =>
+        [char, resizeGlyph(data, from.cols, from.rows, cols, rows)]));
     }
     buildGridEditor();
   }
 
-  // Nodes: enforce square cells and zero gap
+  // Nodes: enforce square pixels and zero gap
   if (state.params.cellShape === 'nodes') {
     if (key === 'cellWidth' || key === 'cellHeight') {
       state.params.cellWidth = value;
       state.params.cellHeight = value;
-      const wSlider = document.getElementById('param-cellWidth');
-      const hSlider = document.getElementById('param-cellHeight');
-      const wNum = document.querySelector('.param-num[data-key="cellWidth"]');
-      const hNum = document.querySelector('.param-num[data-key="cellHeight"]');
-      const wBadge = document.getElementById('param-val-cellWidth');
-      const hBadge = document.getElementById('param-val-cellHeight');
-      if (wSlider) wSlider.value = value;
-      if (hSlider) hSlider.value = value;
-      if (wNum) wNum.value = value;
-      if (hNum) hNum.value = value;
-      if (wBadge) wBadge.textContent = value;
-      if (hBadge) hBadge.textContent = value;
     }
     if (key === 'gapX' || key === 'gapY') {
       state.params.gapX = 0;
       state.params.gapY = 0;
-      // Reflect the forced 0 in the UI (slider, number box, badge)
-      const slider = document.getElementById(`param-${key}`);
-      const num = document.querySelector(`.param-num[data-key="${key}"]`);
-      const badge = document.getElementById(`param-val-${key}`);
-      if (slider) slider.value = 0;
-      if (num) num.value = 0;
-      if (badge) badge.textContent = 0;
     }
   }
 
-  // Clamp cornerRadius to fit within both cell dimensions
-  if (key === 'cellWidth' || key === 'cellHeight' || key === 'cornerRadius') {
-    const maxRad = Math.floor(Math.min(state.params.cellWidth, state.params.cellHeight) / 2);
-    if (state.params.cornerRadius > maxRad) {
-      state.params.cornerRadius = maxRad;
-      const slider = document.getElementById('param-cornerRadius');
-      const num = document.querySelector('.param-num[data-key="cornerRadius"]');
-      if (slider) slider.value = maxRad;
-      if (num) num.value = maxRad;
-    }
-  }
+  // Clamp cornerRadius to fit within both pixel dimensions
+  const maxRad = Math.floor(Math.min(state.params.cellWidth, state.params.cellHeight) / 2);
+  if (state.params.cornerRadius > maxRad) state.params.cornerRadius = maxRad;
 
-  if (key === 'fgColor') document.documentElement.style.setProperty('--fg', value);
-  if (key === 'bgColor') document.documentElement.style.setProperty('--bg', value);
-  updateConditionalParams();
-
-  renderEditorPreview();
-  renderPreviewStrip();
-  renderTypeTester();
+  syncParamControls();
+  syncFitHeight();
+  render();
 }
 
 // ─────────────────────────────────────────────
@@ -1402,128 +1595,68 @@ function scaleGlyph(data, srcCols, srcRows, dstCols, dstRows) {
   return out;
 }
 
-function resizeAllGlyphs(oldCols, oldRows, newCols, newRows) {
-  for (const char of Object.keys(state.glyphs)) {
-    state.glyphs[char] = resizeGlyph(state.glyphs[char], oldCols, oldRows, newCols, newRows);
-  }
-}
-
 // ─────────────────────────────────────────────
 //  Rendering
 // ─────────────────────────────────────────────
 
 function render() {
   renderEditorPreview();
-  renderPreviewStrip();
+  renderCharMap();
   renderTypeTester();
 }
 
 function renderEditorPreview() {
-  syncGridAccessibility();
-  syncButtonStates();
   const { cols, rows } = state.params;
   const data = state.glyphs[state.currentChar];
   scheduleAutosave();   // every edit / param change / char switch passes through here
+  scheduleLookThumbs();
+  updateCharHeading();
   if (!data) return;
-  document.getElementById('editor-preview').innerHTML =
-    generateGlyphSVG(data, cols, rows, state.params, state.currentChar);
+  $('editor-preview').innerHTML = generateGlyphSVG(data, cols, rows, state.params, state.currentChar);
 }
 
-function renderPreviewStrip(onlyChar) {
+// Look thumbnails show the user's own "Aa" in each look. They only depend on
+// those two drawings and the grid, so they are redrawn when one of them changes.
+let lookThumbTimer = 0, lookThumbSignature = '';
+function scheduleLookThumbs() {
+  clearTimeout(lookThumbTimer);
+  lookThumbTimer = setTimeout(renderLookThumbs, 200);
+}
+
+function renderLookThumbs() {
   const { cols, rows } = state.params;
-  const previewParams = scaleParams(state.params, 10);
-  const strip = document.getElementById('preview-strip');
-
-  if (onlyChar) {
-    // Update just the one changed cell — use dataset comparison (safe for all chars)
-    for (const cell of strip.querySelectorAll('.preview-char')) {
-      if (cell.dataset.char === onlyChar) {
-        const data = state.glyphs[onlyChar];
-        if (data) cell.innerHTML = generateGlyphSVG(data, cols, rows, previewParams, onlyChar);
-        return;
-      }
-    }
-    return;
-  }
-
-  // Full rebuild — ordered by CHAR_GROUPS
-  strip.innerHTML = '';
-  for (const group of CHAR_GROUPS) {
-    for (const char of group.chars) {
-      const data = state.glyphs[char];
-      if (!data) continue;
-      const cell = document.createElement('button');
-      cell.setAttribute('aria-label', `Edit character ${char}`);
-      cell.className = 'preview-char';
-      cell.dataset.char = char;
-      cell.title = char;
-      cell.addEventListener('click', () => selectChar(char));
-      cell.innerHTML = generateGlyphSVG(data, cols, rows, previewParams, char);
-      strip.appendChild(cell);
-    }
+  const signature = JSON.stringify([cols, rows, state.glyphs.A, state.glyphs.a]);
+  if (signature === lookThumbSignature) return;
+  lookThumbSignature = signature;
+  for (const btn of document.querySelectorAll('.look-btn')) {
+    const preset = DEFAULT_STYLES.find(s => s.name === btn.dataset.preset);
+    const params = thumbParams({ ...state.params, ...PRESET_RESETS, lockNodeRadius: true, ...preset.params, charSpacing: 8 });
+    params.cornerRadius = Math.min(params.cornerRadius, Math.floor(Math.min(params.cellWidth, params.cellHeight) / 2));
+    btn.querySelector('.look-thumb').innerHTML = generateTextSVG(state.glyphs, 'Aa', params) || '';
   }
 }
-
-// ─────────────────────────────────────────────
-//  Export
-// ─────────────────────────────────────────────
 
 // ─────────────────────────────────────────────
 //  Type tester
 // ─────────────────────────────────────────────
 
 function buildTypeTester() {
-  const panel = document.getElementById('type-tester');
-  panel.innerHTML = '';
-
-  const bar = document.createElement('div');
-  bar.className = 'type-tester-bar';
-
-  const label = document.createElement('label');
-  label.htmlFor = 'type-tester-input';
-  label.className = 'type-tester-label';
-  label.textContent = 'Text';
-
-  const input = document.createElement('input');
-  input.type = 'text';
-  input.id = 'type-tester-input';
-  input.className = 'type-tester-input';
-  input.placeholder = 'Type to preview…';
-  input.value = 'HELLO WORLD';
-  input.addEventListener('input', renderTypeTester);
-
-  const sizeLabel = document.createElement('label');
-  sizeLabel.htmlFor = 'type-size';
-  sizeLabel.className = 'type-tester-label';
-  sizeLabel.textContent = 'Size';
-
-  const sizeInput = document.createElement('input');
-  sizeInput.type = 'range';
-  sizeInput.id = 'type-size';
-  sizeInput.min = 30;
-  sizeInput.max = 200;
-  sizeInput.value = 60;
-  sizeInput.title = 'Preview text size';
-  sizeInput.style.cssText = 'width:72px;cursor:pointer;accent-color:var(--ui-accent);';
-  sizeInput.addEventListener('input', renderTypeTester);
-
-  const exportBtn = document.createElement('button');
-  exportBtn.textContent = 'Export text SVG';
-  exportBtn.className = 'primary';
-  exportBtn.addEventListener('click', exportTypeTester);
-
-  bar.appendChild(label);
-  bar.appendChild(input);
-  bar.appendChild(sizeLabel);
-  bar.appendChild(sizeInput);
-  bar.appendChild(exportBtn);
-  panel.appendChild(bar);
-
-  const preview = document.createElement('div');
-  preview.id = 'type-tester-preview';
-  preview.className = 'type-tester-preview';
-  panel.appendChild(preview);
-
+  const panel = $('type-tester');
+  panel.innerHTML = `
+    <h2 class="visually-hidden">Type tester</h2>
+    <div class="type-tester-bar">
+      <label for="type-tester-input">Text</label>
+      <input type="text" id="type-tester-input" class="type-tester-input" value="Hello World" autocomplete="off" spellcheck="false">
+      <div class="type-size">
+        <label for="type-size">Size</label>
+        <input type="range" id="type-size" min="30" max="200" value="60">
+        <output id="type-size-value" for="type-size"></output>
+      </div>
+    </div>
+    <div id="type-tester-preview" class="type-tester-preview"></div>
+    <p id="tester-missing" role="status" hidden></p>`;
+  $('type-tester-input').addEventListener('input', renderTypeTester);
+  $('type-size').addEventListener('input', renderTypeTester);
   renderTypeTester();
 }
 
@@ -1539,181 +1672,236 @@ function scheduleTypeTester() {
 }
 
 function renderTypeTester() {
-  const input   = document.getElementById('type-tester-input');
-  const preview = document.getElementById('type-tester-preview');
+  const input = $('type-tester-input');
+  const preview = $('type-tester-preview');
   if (!input || !preview) return;
-  const svg = generateTextSVG(state.glyphs, input.value, state.params);
-  preview.innerHTML = svg || '';
-  const height = Number(document.getElementById('type-size')?.value || 60);
-  preview.style.height = `${height}px`;
+  const height = Number($('type-size').value) || 60;
+  $('type-size-value').textContent = `${height} px`;
+
+  const text = input.value;
+  const svg = text.trim() ? generateTextSVG(state.glyphs, text, state.params) : null;
+  preview.innerHTML = svg || '<span class="empty">Type some text to see it in your font.</span>';
   const image = preview.querySelector('svg');
   if (image) image.style.height = `${height}px`;
-}
 
-function exportTypeTester() {
-  const input = document.getElementById('type-tester-input');
-  const text  = input?.value || 'TEXT';
-  const svg   = generateTextSVG(state.glyphs, text, state.params);
-  if (svg) {
-    const name = text.trim().toUpperCase().replace(/[^A-Z0-9]+/g, '-').slice(0, 40) || 'text';
-    downloadSVG(`${name}.svg`, svg);
-    showToast(`Exported ${name}.svg`);
-  }
-}
-
-function exportCurrent() {
-  const { cols, rows } = state.params;
-  const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params, state.currentChar);
-  downloadSVG(glyphFilename(state.currentChar), svg);
-  showToast(`Exported ${glyphFilename(state.currentChar)}`);
-}
-
-function exportAll() {
-  const { cols, rows } = state.params;
-  const entries = Object.keys(state.glyphs).map(char => ({
-    name: glyphFilename(char),
-    data: generateGlyphSVG(state.glyphs[char], cols, rows, state.params, char),
-  }));
-  const url = URL.createObjectURL(generateZIP(entries));
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'pixel-font-glyphs.zip';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  showToast(`Exported ${entries.length} glyphs in pixel-font-glyphs.zip`);
-}
-
-function exportCurrentPNG() {
-  const { cols, rows } = state.params;
-  const svg = generateGlyphSVG(state.glyphs[state.currentChar], cols, rows, state.params, state.currentChar);
-  const scale = Math.max(1, Math.min(16, parseInt(document.getElementById('png-scale').value) || 4));
-  document.getElementById('png-scale').value = scale;
-  const filename = glyphFilename(state.currentChar, 'png');
-  downloadPNG(filename, svg, scale).then(() => showToast(`Exported ${filename} ×${scale}`)).catch(() => showToast('PNG rasterising failed', 0));
-}
-
-function exportSprite() {
-  const allChars = CHAR_GROUPS.flatMap(g => g.chars).filter(c => state.glyphs[c]);
-  const svg = generateSpriteSheetSVG(state.glyphs, allChars, state.params);
-  downloadSVG('sprite-sheet.svg', svg);
-  showToast(`Exported sprite-sheet.svg (${allChars.length} glyphs)`);
+  // Characters without a drawing are left blank; say which ones.
+  const missing = [...new Set([...text].filter(ch => ch !== ' ' && !state.glyphs[ch]))];
+  const note = $('tester-missing');
+  note.hidden = missing.length === 0;
+  note.textContent = missing.length
+    ? `No drawing for ${missing.slice(0, 12).join(' ')}${missing.length > 12 ? ' …' : ''}. ${missing.length === 1 ? 'It is' : 'They are'} left blank.`
+    : '';
 }
 
 // ─────────────────────────────────────────────
-//  Light / dark mode
-// ─────────────────────────────────────────��───
+//  Export
+// ─────────────────────────────────────────────
+
+function closeMenus() {
+  for (const menu of document.querySelectorAll('.menu:popover-open')) menu.hidePopover();
+}
+
+function pngScale() {
+  const input = $('png-scale');
+  const scale = Math.max(1, Math.min(16, parseInt(input.value) || 4));
+  input.value = scale;
+  return scale;
+}
+
+function glyphSVG(char) {
+  const { cols, rows } = state.params;
+  return generateGlyphSVG(state.glyphs[char], cols, rows, state.params, char);
+}
+
+function exportFont() {
+  const name = state.fontName.trim() || DEFAULT_FONT_NAME;
+  let font;
+  try { font = generateTTF(state.glyphs, state.params, { familyName: name }); }
+  catch { showToast('The font file could not be built. Your drawings are unchanged; try a simpler look.', 0); return; }
+  const file = `${fileSlug(name)}.ttf`;
+  downloadBlob(file, new Blob([font.bytes], { type: 'font/ttf' }));
+  const left = font.notes.length ? ` Not included in a font file: ${font.notes.join(', ')}.` : '';
+  showToast(`Exported ${file} with ${font.glyphCount} characters.${left}`, font.notes.length ? 10000 : 5000);
+}
+
+function exportCurrent() {
+  const file = glyphFilename(state.currentChar);
+  downloadSVG(file, glyphSVG(state.currentChar));
+  showToast(`Exported ${file}`);
+}
+
+function exportCurrentPNG() {
+  const scale = pngScale();
+  const file = glyphFilename(state.currentChar, 'png');
+  rasterizeSVG(glyphSVG(state.currentChar), scale)
+    .then(blob => { downloadBlob(file, blob); showToast(`Exported ${file} at ${scale}×`); })
+    .catch(() => showToast('The PNG could not be created. Try a smaller PNG scale.', 0));
+}
+
+function exportAll() {
+  const entries = Object.keys(state.glyphs).map(char => ({ name: glyphFilename(char), data: glyphSVG(char) }));
+  downloadBlob('pixel-font-svg.zip', generateZIP(entries));
+  showToast(`Exported ${entries.length} SVG files in pixel-font-svg.zip`);
+}
+
+async function exportAllPNG(button) {
+  const scale = pngScale();
+  const chars = Object.keys(state.glyphs);
+  button.disabled = true;
+  try {
+    const entries = [];
+    for (const char of chars) {
+      const blob = await rasterizeSVG(glyphSVG(char), scale);
+      entries.push({ name: glyphFilename(char, 'png'), data: new Uint8Array(await blob.arrayBuffer()) });
+    }
+    downloadBlob('pixel-font-png.zip', generateZIP(entries));
+    showToast(`Exported ${entries.length} PNG files at ${scale}× in pixel-font-png.zip`);
+  } catch {
+    showToast('The PNG files could not be created. Try a smaller PNG scale.', 0);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function exportSprite() {
+  const chars = ALL_CHARS.filter(c => state.glyphs[c]);
+  downloadSVG('sprite-sheet.svg', generateSpriteSheetSVG(state.glyphs, chars, state.params));
+  showToast(`Exported sprite-sheet.svg with ${chars.length} characters`);
+}
+
+function exportTypeTester() {
+  const text = $('type-tester-input').value;
+  const svg = text.trim() ? generateTextSVG(state.glyphs, text, state.params) : null;
+  if (!svg) { showToast('Type some text in the type tester first.'); return; }
+  const file = `${fileSlug(text)}.svg`;
+  downloadSVG(file, svg);
+  showToast(`Exported ${file}`);
+}
 
 // ─────────────────────────────────────────────
 //  Toast notifications
 // ─────────────────────────────────────────────
 
-function showToast(msg, duration = 6000, action) {
-  const container = document.getElementById('toast-container');
-  const toast = Object.assign(document.createElement('div'), {className: 'toast', textContent: msg + ' '});
-  container.appendChild(toast);
+// The Undo of the latest saved-style toast. Ctrl+Z runs it while it is shown,
+// because those changes are not on the project's undo stack.
+let toastUndo = null;
+
+/**
+ * @param {string} msg
+ * @param {number} duration  ms; 0 keeps the toast until it is dismissed
+ * @param {Function} [action]  adds an Undo button
+ * @param {boolean} [viaShortcut]  let Ctrl+Z trigger the action
+ */
+function showToast(msg, duration = 5000, action, viaShortcut = false) {
+  const container = $('toast-container');
+  // The same message twice replaces the first instead of stacking.
+  for (const old of container.children) if (old.dataset.msg === msg) old.remove();
+  const toast = document.createElement('div');
+  toast.className = 'toast';
+  toast.dataset.msg = msg;
+  toast.appendChild(Object.assign(document.createElement('span'), { textContent: msg }));
+
+  const remove = () => {
+    toast.remove();
+    if (toastUndo && toastUndo.toast === toast) toastUndo = null;
+  };
   if (action) {
-    const button = Object.assign(document.createElement('button'), {textContent: 'Undo'});
-    button.addEventListener('click', () => { action(); toast.remove(); });
+    const button = Object.assign(document.createElement('button'), { textContent: 'Undo' });
+    button.addEventListener('click', () => { action(); remove(); });
     toast.appendChild(button);
+    if (viaShortcut) toastUndo = { toast, run: () => { action(); remove(); } };
   }
   if (!duration) {
     // Persistent (error) toasts need an explicit way to dismiss them.
-    const close = Object.assign(document.createElement('button'), {textContent: '×', className: 'toast-close'});
-    close.setAttribute('aria-label', 'Dismiss notification');
-    close.addEventListener('click', () => toast.remove());
+    const close = document.createElement('button');
+    close.className = 'icon-btn';
+    close.innerHTML = icon('close');
+    close.setAttribute('aria-label', 'Dismiss');
+    close.addEventListener('click', remove);
     toast.appendChild(close);
   }
+  container.appendChild(toast);
+
   // Keep an actionable notification available while keyboard or pointer is inside it.
   let timer;
-  const start = () => { if (duration) timer = setTimeout(() => toast.remove(), duration); };
-  toast.addEventListener('focusin', () => clearTimeout(timer));
-  toast.addEventListener('mouseenter', () => clearTimeout(timer));
+  const start = () => { if (duration) timer = setTimeout(remove, duration); };
+  const stop = () => clearTimeout(timer);
+  toast.addEventListener('focusin', stop);
+  toast.addEventListener('mouseenter', stop);
   toast.addEventListener('focusout', start);
   toast.addEventListener('mouseleave', start);
   start();
 }
 
-function setSaveStatus(text) {
-  const status = document.getElementById('autosave-status');
-  if (status) status.textContent = text;
+/** Toast with an Undo that restores a project snapshot (also reachable with Ctrl+Z). */
+function offerProjectUndo(message, snapshot, alsoRestore) {
+  showToast(message, 6000, () => {
+    saveUndo();
+    restoreSnapshot(snapshot);
+    if (alsoRestore) alsoRestore();
+    refreshAll();
+  });
 }
-function clearPreset() {
-  document.querySelectorAll('[data-preset]').forEach(b => b.classList.remove('active'));
+
+// ─────────────────────────────────────────────
+//  Theme
+// ─────────────────────────────────────────────
+
+function applyTheme(theme) {
+  document.documentElement.dataset.theme = theme;
+  const btn = $('btn-theme');
+  const target = theme === 'light' ? 'dark' : 'light';
+  btn.innerHTML = icon(target === 'light' ? 'sun' : 'moon');
+  btn.setAttribute('aria-label', `Switch to the ${target} theme`);
+  btn.dataset.tip = `Switch to the ${target} theme`;
 }
 
 function toggleTheme() {
-  const isLight = document.documentElement.dataset.theme === 'light';
-  const goingLight = !isLight;
-  document.documentElement.dataset.theme = goingLight ? 'light' : '';
-  try { localStorage.setItem('pfg-theme', goingLight ? 'light' : ''); } catch {}
-  const btn = document.getElementById('btn-theme');
-  if (btn) btn.textContent = goingLight ? '☾' : '☀';
-
-
+  const theme = document.documentElement.dataset.theme === 'light' ? 'dark' : 'light';
+  applyTheme(theme);
+  try { localStorage.setItem('pfg-theme', theme); } catch {}
 }
 
 // ─────────────────────────────────────────────
 //  Reset
 // ─────────────────────────────────────────────
 
+/** Back to the drawing this character had when its letterform set was applied. */
 function resetCurrentChar() {
+  const char = state.currentChar;
+  const original = state.pristine[char];
+  if (!original || !isEdited(char)) { showToast(`“${char}” already matches its original drawing.`, 3000); return; }
   saveUndo();
-  offerProjectUndo('Reset character', undoStack[undoStack.length - 1]);
-  const { cols, rows } = state.params;
-  const src = bestFontSource(cols, rows);
-  const srcData = src.data[state.currentChar];
-  if (srcData) {
-    state.glyphs[state.currentChar] = (src.cols === cols && src.rows === rows)
-      ? [...srcData]
-      : scaleGlyph(srcData, src.cols, src.rows, cols, rows);
-    buildGridEditor();
-    renderEditorPreview();
-    renderPreviewStrip(state.currentChar);
-    scheduleTypeTester();
-  }
-}
-
-function resetAll() {
-  saveUndo();
-  offerProjectUndo('Regenerated characters', undoStack[undoStack.length - 1]);
-  const { cols, rows } = state.params;
-  const src = bestFontSource(cols, rows);
-  for (const char of Object.keys(src.data)) {
-    state.glyphs[char] = (src.cols === cols && src.rows === rows)
-      ? [...src.data[char]]
-      : scaleGlyph(src.data[char], src.cols, src.rows, cols, rows);
-  }
+  const before = undoStack[undoStack.length - 1];
+  state.glyphs[char] = [...original];
   buildGridEditor();
-  render();
+  refreshCurrentChar();
+  offerProjectUndo(`Reset “${char}” to its original drawing`, before);
 }
 
 /**
- * Header "Reset All": back to factory state (default params, Classic 5×7
- * glyphs). With autosave a page refresh no longer gives a clean slate, so this
- * is the way to get one. It is a single undo step, and the autosave is
- * overwritten right away. ("Generate Default Characters" still calls resetAll,
- * which only regenerates glyphs for the current grid.)
+ * Back to factory state (default settings, Classic 5×7 drawings). With autosave
+ * a page refresh no longer gives a clean slate, so this is the way to get one.
+ * It is a single undo step, and the autosave is overwritten right away.
  */
 function resetEverything() {
-  clearPreset();
   saveUndo();
-  offerProjectUndo('Reset project', undoStack[undoStack.length - 1]);
+  const before = undoStack[undoStack.length - 1];
   Object.assign(state.params, DEFAULT_PARAMS);
   state.glyphs = {};
   for (const char of Object.keys(FONT_DATA)) state.glyphs[char] = [...FONT_DATA[char]];
+  state.pristine = copyGlyphs(state.glyphs);
   syncParamControls();
   setActiveCharStyle('Classic');
-  const input = document.getElementById('autoscale-height');
-  if (input) input.value = computeCharHeight();
-  buildGridEditor();
-  render();
+  setLook('Rounded');
+  syncFitHeight();
+  refreshAll();
   writeAutosave();
+  offerProjectUndo('Reset the project to its defaults', before);
 }
 
 // ─────────────────────────────────────────────
-//  Styles — save/load/delete via localStorage
+//  Saved styles — drawings + settings, kept in localStorage
 // ─────────────────────────────────────────────
 
 const STYLES_KEY = 'pfg-styles';
@@ -1725,289 +1913,264 @@ function readStyles() {
 
 function writeStyles(styles) {
   try { localStorage.setItem(STYLES_KEY, JSON.stringify(styles)); return true; }
-  catch { showToast('Could not save styles on this device', 0); return false; }
+  catch { showToast('The style could not be saved: browser storage is full or blocked. Export your styles to keep them.', 0); return false; }
+}
+
+function restoreStyles(styles) {
+  if (writeStyles(styles)) renderStylesList();
 }
 
 function saveCurrentStyle(name) {
   name = name.trim();
-  if (!name) return;
+  if (!name) return false;
   const styles = readStyles();
   const before = structuredClone(styles);
   const idx = styles.findIndex(s => s.name === name);
-  const entry = {
-    name,
-    params: { ...state.params },
-    glyphs: Object.fromEntries(
-      Object.entries(state.glyphs).map(([k, v]) => [k, [...v]])
-    ),
-  };
+  const entry = { name, params: { ...state.params }, glyphs: copyGlyphs(state.glyphs) };
   if (idx >= 0) styles[idx] = entry;
   else styles.push(entry);
-  if (!writeStyles(styles)) return;
+  if (!writeStyles(styles)) return false;
   renderStylesList();
-  showToast(idx >= 0 ? 'Replaced saved style' : 'Saved style', 6000, () => restoreStyles(before));
+  showToast(idx >= 0 ? `Replaced the saved style “${name}”` : `Saved the style “${name}”`, 8000, () => restoreStyles(before), true);
+  return true;
 }
 
 function applyStyle(saved) {
-  clearPreset();
-  saved = sanitizeStyle(saved, state.params);
-  if (!saved) return;
+  const clean = sanitizeStyle(saved, state.params);
+  if (!clean) { showToast(`“${saved.name}” could not be loaded: its data is not valid.`, 0); return; }
   saveUndo();
-  const oldCols = state.params.cols;
-  const oldRows = state.params.rows;
+  const before = undoStack[undoStack.length - 1];
+  const oldCols = state.params.cols, oldRows = state.params.rows;
   // Migrate legacy saves: 'gap' → gapX/gapY
-  const migrated = { ...saved.params };
-  if (migrated.gap != null && migrated.gapX == null) {
-    migrated.gapX = migrated.gap;
-    migrated.gapY = migrated.gap;
-  }
+  const migrated = { ...clean.params };
+  if (migrated.gap != null && migrated.gapX == null) { migrated.gapX = migrated.gap; migrated.gapY = migrated.gap; }
+  delete migrated.gap;
   Object.assign(state.params, migrated);
 
-  if (state.params.cols !== oldCols || state.params.rows !== oldRows) {
-    resizeAllGlyphs(oldCols, oldRows, state.params.cols, state.params.rows);
+  const { cols, rows } = state.params;
+  if (cols !== oldCols || rows !== oldRows) {
+    for (const char of Object.keys(state.glyphs)) state.glyphs[char] = resizeGlyph(state.glyphs[char], oldCols, oldRows, cols, rows);
   }
-  if (saved.glyphs) {
-    for (const [char, data] of Object.entries(saved.glyphs)) {
-      state.glyphs[char] = [...data];
-    }
-  }
+  if (clean.glyphs) for (const [char, data] of Object.entries(clean.glyphs)) state.glyphs[char] = [...data];
+  state.pristine = copyGlyphs(state.glyphs);
 
-  buildGridEditor();
+  setLook(null);
   syncParamControls();
-  syncShapeButtons();
-  render();
+  syncFitHeight();
+  refreshAll();
+  offerProjectUndo(`Loaded the style “${saved.name}”. It replaced your drawings and settings.`, before);
 }
 
 function deleteStyle(name) {
   const before = readStyles();
   if (!writeStyles(before.filter(s => s.name !== name))) return;
   renderStylesList();
-  showToast('Deleted saved style', 6000, () => restoreStyles(before));
+  showToast(`Deleted the saved style “${name}”`, 8000, () => restoreStyles(before), true);
 }
 
 function exportStyles() {
   const styles = readStyles();
-  if (styles.length === 0) return;
-  const json = JSON.stringify(styles, null, 2);
-  const blob = new Blob([json], { type: 'application/json;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = 'pixel-font-styles.json';
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  if (!styles.length) return;
+  downloadBlob('pixel-font-styles.json', new Blob([JSON.stringify(styles, null, 2)], { type: 'application/json;charset=utf-8' }));
+  showToast(`Exported ${styles.length} saved ${styles.length === 1 ? 'style' : 'styles'} in pixel-font-styles.json`);
 }
 
 function importStyles(file) {
   const reader = new FileReader();
   reader.onload = () => {
-    try {
-      const imported = JSON.parse(reader.result);
-      if (!Array.isArray(imported)) throw new Error('Expected an array');
-      const existing = readStyles();
-      const before = structuredClone(existing);
-      let count = 0;
-      for (const candidate of imported) {
-        const entry = sanitizeStyle(candidate, state.params);
-        if (!entry || !entry.name) continue;
-        count++;
-        const idx = existing.findIndex(s => s.name === entry.name);
-        if (idx >= 0) existing[idx] = entry;
-        else existing.push(entry);
-      }
-      if (!writeStyles(existing)) return;
-      renderStylesList();
-      showToast(`Imported ${count} styles, skipped ${imported.length - count}`, 6000, () => restoreStyles(before));
-    } catch { showToast('Could not import styles: invalid JSON or style data', 0); }
+    let imported;
+    try { imported = JSON.parse(reader.result); } catch { imported = null; }
+    // A single style object is accepted as well as a list of them.
+    if (imported && !Array.isArray(imported) && typeof imported === 'object') imported = [imported];
+    if (!Array.isArray(imported)) {
+      showToast(`“${file.name}” is not a styles file. Choose a .json file exported from Saved styles.`, 0);
+      return;
+    }
+    const existing = readStyles();
+    const before = structuredClone(existing);
+    let added = 0, replaced = 0;
+    for (const candidate of imported) {
+      const entry = sanitizeStyle(candidate, state.params);
+      if (!entry || !entry.name) continue;
+      const idx = existing.findIndex(s => s.name === entry.name);
+      if (idx >= 0) { existing[idx] = entry; replaced++; } else { existing.push(entry); added++; }
+    }
+    const skipped = imported.length - added - replaced;
+    if (!added && !replaced) {
+      showToast(`Nothing was imported from “${file.name}”: no entry has a name and valid settings.`, 0);
+      return;
+    }
+    if (!writeStyles(existing)) return;
+    renderStylesList();
+    const parts = [`Imported ${added + replaced} ${added + replaced === 1 ? 'style' : 'styles'}`];
+    if (replaced) parts.push(`${replaced} replaced a saved style with the same name`);
+    if (skipped) parts.push(`${skipped} skipped for missing a name or valid settings`);
+    showToast(parts.join('. ') + '.', 10000, () => restoreStyles(before), true);
   };
-  reader.onerror = () => showToast('Could not read styles file', 0);
+  reader.onerror = () => showToast(`Could not read “${file.name}”.`, 0);
   reader.readAsText(file);
 }
 
-/** Push current state.params back into all control inputs. */
-function syncParamControls() {
-  for (const def of PARAM_DEFS) {
-    const value = state.params[def.key];
-    if (def.type === 'range') {
-      const slider = document.getElementById(`param-${def.key}`);
-      const num    = document.querySelector(`.param-num[data-key="${def.key}"]`);
-      const badge  = document.getElementById(`param-val-${def.key}`);
-      if (slider) slider.value = value;
-      if (num)    num.value    = value;
-      if (badge)  badge.textContent = value;
-    } else if (def.type === 'color') {
-      const picker = document.getElementById(`param-${def.key}`);
-      if (picker) picker.value = value;
-    } else if (def.type === 'checkbox') {
-      const cb = document.getElementById(`param-${def.key}`);
-      if (cb) cb.checked = !!value;
-    }
-  }
-  document.documentElement.style.setProperty('--fg', state.params.fgColor);
-  document.documentElement.style.setProperty('--bg', state.params.bgColor);
-  syncShapeButtons();
-  const spacing = document.getElementById('tester-spacing');
-  if (spacing) spacing.value = state.params.charSpacing;
-}
-
-function syncShapeButtons() {
-  const shape = state.params.cellShape || 'rect';
-  document.querySelectorAll('.cell-shape-btn').forEach(b => {
-    b.classList.toggle('active', b.dataset.shape === shape);
-  });
-  updateConditionalParams();
-}
-
-function updateConditionalParams() {
-  const hasOutline = !!state.params.outline;
-  const isNodes = state.params.cellShape === 'nodes';
-
-  const outlineWRow = document.querySelector('.param-row[data-param-key="outlineWidth"]');
-  const outlineCRow = document.querySelector('.param-row[data-param-key="outlineColor"]');
-  if (outlineWRow) outlineWRow.style.display = hasOutline ? '' : 'none';
-  if (outlineCRow) outlineCRow.style.display = hasOutline ? '' : 'none';
-
-  // Nodes: hide gap controls (locked at 0) and square-cell note
-  for (const key of ['gapX', 'gapY', 'cornerMerge']) {
-    const row = document.querySelector(`.param-row[data-param-key="${key}"]`);
-    if (row) row.style.display = isNodes ? 'none' : '';
-  }
-  // lockNodeRadius only relevant for nodes
-  const lockRow = document.querySelector('.param-row[data-param-key="lockNodeRadius"]');
-  if (lockRow) lockRow.style.display = isNodes ? '' : 'none';
-
-  // shapeWeight only drives ring / plus / diagonal; offColor only with showOff
-  const weightRow = document.querySelector('.param-row[data-param-key="shapeWeight"]');
-  if (weightRow) weightRow.style.display = ['ring', 'plus', 'diagonal', 'open', 'dash'].includes(state.params.cellShape) ? '' : 'none';
-  const offRow = document.querySelector('.param-row[data-param-key="offColor"]');
-  if (offRow) offRow.style.display = state.params.showOff ? '' : 'none';
-
-  const shape = state.params.cellShape;
-  const visible = {cornerRadius: ['rect','tile','slope'].includes(shape) || (isNodes && !state.params.lockNodeRadius), cornerMerge: shape === 'rect', bridgeRadius: shape === 'rect', diagWidth: state.params.diagFill};
-  for (const [key, show] of Object.entries(visible)) {
-    const row = document.querySelector(`[data-param-key="${key}"]`);
-    if (row) row.style.display = show ? '' : 'none';
-  }
-}
-
 function buildStylesUI() {
-  const panel = document.getElementById('params-panel');
+  const body = addSection($('params-panel'), 'styles', 'Saved styles', false);
+  body.appendChild(hint('A saved style keeps every drawing and setting, so you can return to it or share it.'));
 
-  const section = document.createElement('div');
-  section.id = 'styles-section';
-
-  const heading = document.createElement('h2');
-  heading.className = 'styles-heading';
-  heading.textContent = 'Styles';
-  section.appendChild(heading);
-
-  // Save row
+  const field = document.createElement('div');
+  field.className = 'param-row';
+  const label = Object.assign(document.createElement('label'), { htmlFor: 'style-name-input', textContent: 'Name' });
   const saveRow = document.createElement('div');
   saveRow.className = 'styles-save-row';
-
   const nameInput = document.createElement('input');
   nameInput.type = 'text';
   nameInput.id = 'style-name-input';
-  nameInput.placeholder = 'Style name…';
-  nameInput.className = 'style-name-input';
-
-  const saveBtn = document.createElement('button');
-  saveBtn.textContent = 'Save';
-  saveBtn.className = 'primary';
+  nameInput.maxLength = 60;
+  nameInput.autocomplete = 'off';
+  const saveBtn = Object.assign(document.createElement('button'), { textContent: 'Save', disabled: true });
+  nameInput.addEventListener('input', () => { saveBtn.disabled = !nameInput.value.trim(); });
   saveBtn.addEventListener('click', () => {
-    saveCurrentStyle(nameInput.value);
-    nameInput.value = '';
+    if (saveCurrentStyle(nameInput.value)) { nameInput.value = ''; saveBtn.disabled = true; }
   });
-  nameInput.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter') saveBtn.click();
-  });
+  nameInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') saveBtn.click(); });
+  saveRow.append(nameInput, saveBtn);
+  field.append(label, saveRow);
+  body.appendChild(field);
 
-  saveRow.appendChild(nameInput);
-  saveRow.appendChild(saveBtn);
-  section.appendChild(saveRow);
+  const list = document.createElement('div');
+  list.id = 'styles-list';
+  body.appendChild(list);
 
-  // Import/export row
   const ioRow = document.createElement('div');
   ioRow.className = 'styles-io-row';
-
-  const exportBtn = document.createElement('button');
-  exportBtn.textContent = 'Export All';
-  exportBtn.title = 'Download all saved styles as JSON';
-  exportBtn.addEventListener('click', exportStyles);
-
-  const importBtn = document.createElement('button');
-  importBtn.textContent = 'Import';
-  importBtn.title = 'Load styles from a JSON file';
-  const fileInput = document.createElement('input');
-  fileInput.type = 'file';
-  fileInput.setAttribute('aria-label', 'Import saved styles JSON');
-  fileInput.accept = '.json';
-  fileInput.style.display = 'none';
+  const importBtn = Object.assign(document.createElement('button'), { textContent: 'Import…' });
+  const fileInput = Object.assign(document.createElement('input'), { type: 'file', accept: '.json,application/json', hidden: true });
+  fileInput.setAttribute('aria-label', 'Styles file');
   fileInput.addEventListener('change', () => {
     if (fileInput.files[0]) importStyles(fileInput.files[0]);
     fileInput.value = '';
   });
   importBtn.addEventListener('click', () => fileInput.click());
+  const exportBtn = Object.assign(document.createElement('button'), { textContent: 'Export all', id: 'btn-export-styles' });
+  exportBtn.addEventListener('click', exportStyles);
+  ioRow.append(importBtn, exportBtn, fileInput);
+  body.appendChild(ioRow);
 
-  ioRow.appendChild(exportBtn);
-  ioRow.appendChild(importBtn);
-  ioRow.appendChild(fileInput);
-  section.appendChild(ioRow);
-
-  // List container
-  const list = document.createElement('div');
-  list.id = 'styles-list';
-  section.appendChild(list);
-
-  panel.appendChild(section);
   renderStylesList();
 }
 
 function renderStylesList() {
-  const list = document.getElementById('styles-list');
+  const list = $('styles-list');
   if (!list) return;
   const styles = readStyles();
   list.innerHTML = '';
+  $('btn-export-styles').disabled = styles.length === 0;
+  setSectionValue('styles', styles.length ? String(styles.length) : '');
 
   if (styles.length === 0) {
-    const empty = document.createElement('div');
-    empty.className = 'styles-empty';
-    empty.textContent = 'No saved styles';
-    list.appendChild(empty);
+    list.appendChild(Object.assign(document.createElement('p'), { className: 'styles-empty', textContent: 'Nothing saved yet. Name the current style above to save it.' }));
     return;
   }
-
   for (const style of styles) {
     const item = document.createElement('div');
     item.className = 'style-item';
-
-    const name = document.createElement('span');
-    name.className = 'style-name';
-    name.textContent = style.name;
-    name.title = style.name;
-
-    const actions = document.createElement('div');
-    actions.className = 'style-actions';
-
-    const loadBtn = document.createElement('button');
-    loadBtn.textContent = 'Load';
+    const name = Object.assign(document.createElement('span'), { className: 'style-name', textContent: style.name, title: style.name });
+    const loadBtn = Object.assign(document.createElement('button'), { textContent: 'Load' });
+    loadBtn.setAttribute('aria-label', `Load the style ${style.name}`);
     loadBtn.addEventListener('click', () => applyStyle(style));
-
     const delBtn = document.createElement('button');
-    delBtn.textContent = '×';
-    delBtn.className = 'style-delete';
-    delBtn.title = 'Delete style';
-    delBtn.setAttribute('aria-label', `Delete style ${style.name}`);
+    delBtn.className = 'icon-btn style-delete';
+    delBtn.innerHTML = icon('close');
+    delBtn.setAttribute('aria-label', `Delete the style ${style.name}`);
     delBtn.addEventListener('click', () => deleteStyle(style.name));
-
-    actions.appendChild(loadBtn);
-    actions.appendChild(delBtn);
-    item.appendChild(name);
-    item.appendChild(actions);
+    item.append(name, loadBtn, delBtn);
     list.appendChild(item);
   }
+}
+
+// ─────────────────────────────────────────────
+//  Settings ↔ controls
+// ─────────────────────────────────────────────
+
+/** Push current state.params back into all control inputs. */
+function syncParamControls() {
+  for (const def of PARAM_DEFS) {
+    const value = state.params[def.key];
+    const control = $(`param-${def.key}`);
+    if (!control) continue;
+    if (def.type === 'checkbox') control.checked = !!value;
+    else control.value = value;
+    const num = document.querySelector(`.param-num[data-key="${def.key}"]`);
+    if (num) num.value = value;
+  }
+  const shape = state.params.cellShape || 'rect';
+  document.querySelectorAll('.cell-shape-btn').forEach(b => setPressed(b, b.dataset.shape === shape));
+  setSectionValue('shape', (CELL_SHAPES.find(([key]) => key === shape) || [])[1] || '');
+  setSectionValue('grid', `${state.params.cols} × ${state.params.rows}`);
+  updateConditionalParams();
+}
+
+/** Show only the settings that do something for the current pixel shape. */
+function updateConditionalParams() {
+  const p = state.params, shape = p.cellShape;
+  const isNodes = shape === 'nodes';
+  const visible = {
+    outlineWidth: !!p.outline,
+    outlineColor: !!p.outline,
+    gapX: !isNodes,
+    gapY: !isNodes,
+    lockNodeRadius: isNodes,
+    shapeWeight: ['ring', 'plus', 'diagonal', 'open', 'dash'].includes(shape),
+    offColor: !!p.showOff,
+    cornerRadius: ['rect', 'tile', 'slope'].includes(shape) || (isNodes && !p.lockNodeRadius),
+    cornerMerge: shape === 'rect',
+    bridgeRadius: shape === 'rect',
+    diagFill: !isNodes,
+    diagWidth: !!p.diagFill && !isNodes,
+  };
+  for (const [key, show] of Object.entries(visible)) {
+    const row = document.querySelector(`.param-row[data-param-key="${key}"]`);
+    if (row) row.hidden = !show;
+  }
+}
+
+// ─────────────────────────────────────────────
+//  Keyboard shortcuts
+// ─────────────────────────────────────────────
+
+function isTextEntry(t) {
+  return !!t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' ||
+    (t.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'color', 'button', 'file'].includes(t.type)));
+}
+
+function handleShortcut(e) {
+  if (e.defaultPrevented || isTextEntry(e.target)) return;   // text fields keep their native keys
+  const mod = e.ctrlKey || e.metaKey;
+  const done = () => e.preventDefault();
+
+  if (mod && !e.altKey) {
+    const key = e.key.toLowerCase();   // Shift turns 'z' into 'Z'
+    if (key === 'z' && !e.shiftKey) { done(); if (toastUndo) toastUndo.run(); else undo(); }
+    else if (key === 'y' || (key === 'z' && e.shiftKey)) { done(); redo(); }
+    else if (key === 's') { done(); saveProjectFile(); }
+    else if (key === 'c' && !String(getSelection()).length) { done(); copyCurrentChar(); }
+    else if (key === 'v' && clipboard) { done(); pasteCurrentChar(); }
+    return;
+  }
+  if (document.querySelector('.menu:popover-open')) return;
+
+  if (e.altKey && !mod) {
+    const fn = { KeyH: flipH, KeyV: flipV, KeyR: rotate90, KeyI: invertGlyph, KeyX: clearGlyph }[e.code];
+    if (fn) { done(); applyTransform(fn); }
+    return;
+  }
+  if (e.shiftKey && e.key.startsWith('Arrow')) {
+    if (e.target.type === 'range') return;   // sliders use the arrow keys themselves
+    const fn = { ArrowLeft: shiftLeft, ArrowRight: shiftRight, ArrowUp: shiftUp, ArrowDown: shiftDown }[e.key];
+    done(); applyTransform(fn);
+    return;
+  }
+  if (e.key === '[') { done(); stepChar(-1); }
+  else if (e.key === ']') { done(); stepChar(1); }
+  else if (e.key.length === 1 && e.key !== ' ' && state.glyphs[e.key]) { done(); selectChar(e.key); }
 }
 
 // ─────────────────────────────────────────────
@@ -2015,155 +2178,46 @@ function renderStylesList() {
 // ─────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-  // Restore theme preference
-  let savedTheme = '';
-  try { savedTheme = localStorage.getItem('pfg-theme') || ''; } catch {}
-  document.documentElement.dataset.theme = savedTheme;
-  const themeBtn = document.getElementById('btn-theme');
-  if (themeBtn) themeBtn.textContent = savedTheme === 'light' ? '☾' : '☀';
-
+  applyTheme(document.documentElement.dataset.theme === 'light' ? 'light' : 'dark');
+  $('btn-help').innerHTML = icon('help');
+  $('btn-prev-char').innerHTML = icon('prev');
+  $('btn-next-char').innerHTML = icon('next');
 
   init();
-  buildEditorToolbar();
   initEditorEvents();
-  enhanceUI();
 
-  document.getElementById('btn-export').addEventListener('click', exportCurrent);
-  document.getElementById('btn-export-all').addEventListener('click', exportAll);
-  document.getElementById('btn-export-png').addEventListener('click', exportCurrentPNG);
-  document.getElementById('btn-export-sprite').addEventListener('click', exportSprite);
-  document.getElementById('btn-reset').addEventListener('click', resetCurrentChar);
-  document.getElementById('btn-reset-all').addEventListener('click', resetEverything);
-  document.getElementById('btn-undo').addEventListener('click', undo);
-  document.getElementById('btn-redo').addEventListener('click', redo);
-  document.getElementById('btn-theme').addEventListener('click', toggleTheme);
+  $('btn-undo').addEventListener('click', undo);
+  $('btn-redo').addEventListener('click', redo);
+  $('btn-theme').addEventListener('click', toggleTheme);
+  $('btn-prev-char').addEventListener('click', () => stepChar(-1));
+  $('btn-next-char').addEventListener('click', () => stepChar(1));
 
-  document.documentElement.style.setProperty('--fg', state.params.fgColor);
-  document.documentElement.style.setProperty('--bg', state.params.bgColor);
+  // Menus close once an action has run; the toast confirms what happened.
+  const menuAction = (id, fn) => $(id).addEventListener('click', (e) => { closeMenus(); fn(e.currentTarget); });
+  menuAction('exp-font', exportFont);
+  menuAction('exp-svg', exportCurrent);
+  menuAction('exp-png', exportCurrentPNG);
+  menuAction('exp-zip', exportAll);
+  menuAction('exp-pngzip', exportAllPNG);
+  menuAction('exp-sprite', exportSprite);
+  menuAction('exp-text', exportTypeTester);
+  menuAction('btn-save-project', saveProjectFile);
+  menuAction('btn-reset-all', resetEverything);
+  menuAction('btn-open-project', () => $('project-file').click());
+  $('project-file').addEventListener('change', (e) => {
+    if (e.target.files[0]) openProjectFile(e.target.files[0]);
+    e.target.value = '';
+  });
+
+  $('font-name').addEventListener('input', (e) => { state.fontName = e.target.value; scheduleAutosave(); });
+  $('param-padding').addEventListener('change', (e) => {
+    const v = Math.min(40, Math.max(0, Math.round(Number(e.target.value) || 0)));
+    beginParamEdit('padding');
+    applyParam('padding', v);
+    endParamEdit();
+  });
 
   // Flush a pending autosave when the page is closed / reloaded
   window.addEventListener('pagehide', () => { if (autosaveTimer) writeAutosave(); });
-
-  // Keyboard shortcuts
-  document.addEventListener('keydown', (e) => {
-    const mod = e.ctrlKey || e.metaKey;
-    if (!mod) return;
-    // Leave native undo to text fields (type tester, style name, number boxes)
-    const t = e.target;
-    if (t && (t.isContentEditable || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' ||
-        (t.tagName === 'INPUT' && !['range', 'checkbox', 'radio', 'color', 'button'].includes(t.type)))) return;
-    const key = e.key.toLowerCase();   // Shift turns 'z' into 'Z'
-    if (key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); }
-    else if (key === 'y' || (key === 'z' && e.shiftKey)) { e.preventDefault(); redo(); }
-  });
+  document.addEventListener('keydown', handleShortcut);
 });
-
-function offerProjectUndo(message, snapshot) {
-  showToast(message, 6000, () => {
-    saveUndo();
-    restoreSnapshot(snapshot);
-    clearPreset();
-    buildGridEditor();
-    render();
-  });
-}
-function restoreStyles(styles) {
-  if (writeStyles(styles)) renderStylesList();
-}
-
-// Single grid tab stop + aria-activedescendant: arrows move the active cell,
-// Space/Enter edits it. Row wrappers preserve the visual CSS grid geometry.
-function syncGridAccessibility() {
-  const editor = document.getElementById('grid-editor');
-  editor.setAttribute('role', 'grid');
-  editor.setAttribute('aria-label', `Pixel editor for ${state.currentChar}`);
-  editor.setAttribute('aria-describedby', 'editor-instructions');
-  editor.setAttribute('aria-rowcount', state.params.rows);
-  editor.setAttribute('aria-colcount', state.params.cols);
-  editor.querySelectorAll('.grid-cell').forEach(cell => {
-    const r = Number(cell.dataset.r), c = Number(cell.dataset.c);
-    cell.id = `pixel-${r}-${c}`;
-    cell.setAttribute('role', 'gridcell');
-    cell.setAttribute('aria-rowindex', r + 1);
-    cell.setAttribute('aria-colindex', c + 1);
-    cell.setAttribute('aria-label', `Row ${r + 1}, column ${c + 1}, ${cell.classList.contains('on') ? 'on' : 'off'}`);
-    cell.setAttribute('aria-selected', String(cell.classList.contains('on')));
-  });
-  editor.setAttribute('aria-activedescendant', `pixel-${focusedCell.r}-${focusedCell.c}`);
-}
-function syncButtonStates() {
-  document.querySelectorAll('.char-btn,.char-style-btn,.cell-shape-btn,[data-brush],#btn-symmetry,#btn-guides,[data-preset]').forEach(b => {
-    b.setAttribute('aria-pressed', String(b.classList.contains('active')));
-  });
-}
-function makeDisclosure(section, header, content, key, defaultOpen = true) {
-  let open = defaultOpen;
-  try { const saved = localStorage.getItem(`pfg-panel-${key}`); if (saved !== null) open = saved === 'true'; } catch {}
-  content.id ||= `panel-${key}`;
-  header.setAttribute('aria-controls', content.id);
-  const update = () => {
-    header.setAttribute('aria-expanded', String(open));
-    content.hidden = !open;
-    section.classList.toggle('collapsed', !open);
-  };
-  header.addEventListener('click', () => {
-    open = !open;
-    update();
-    try { localStorage.setItem(`pfg-panel-${key}`, String(open)); } catch {}
-  });
-  update();
-}
-function enhanceUI() {
-  document.querySelectorAll('.param-section').forEach((section, i) => {
-    makeDisclosure(section, section.querySelector('.param-section-hdr'), section.querySelector('.param-section-body'), `param-${i}`, PARAM_GROUPS[i].open);
-  });
-  document.querySelectorAll('.presets-section').forEach((section, i) => {
-    const label = section.querySelector('.presets-label');
-    const header = Object.assign(document.createElement('button'), {className: 'param-section-hdr', textContent: label.textContent});
-    label.replaceWith(header);
-    const content = document.createElement('div');
-    while (header.nextSibling) content.appendChild(header.nextSibling);
-    section.appendChild(content);
-    makeDisclosure(section, header, content, `catalogue-${i}`);
-  });
-  const swap = Object.assign(document.createElement('button'), {textContent: 'Swap colours'});
-  swap.addEventListener('click', () => {
-    saveUndo();
-    [state.params.fgColor, state.params.bgColor] = [state.params.bgColor, state.params.fgColor];
-    clearPreset(); syncParamControls(); render();
-  });
-  document.getElementById('param-bgColor').parentElement.after(swap);
-  const nameLabel = Object.assign(document.createElement('label'), {htmlFor: 'style-name-input', textContent: 'Style name'});
-  document.querySelector('.styles-save-row').before(nameLabel);
-  const spacing = document.createElement('label');
-  spacing.textContent = 'Char spacing ';
-  const spacingInput = Object.assign(document.createElement('input'), {type: 'number', min: '0', max: '120', value: state.params.charSpacing, id: 'tester-spacing', className: 'param-num'});
-  spacing.htmlFor = spacingInput.id;
-  spacingInput.addEventListener('change', () => { saveUndo(); applyParam('charSpacing', Math.max(0, Math.min(120, Number(spacingInput.value) || 0))); });
-  spacing.appendChild(spacingInput);
-  document.querySelector('.type-tester-bar').appendChild(spacing);
-  for (const [id, title, content] of [['type-tester', 'Type tester', null], ['preview-panel', 'Font preview', 'preview-strip']]) {
-    const section = document.getElementById(id);
-    const header = Object.assign(document.createElement('button'), {textContent: title, className: 'panel-toggle'});
-    const body = document.createElement('div');
-    body.className = 'panel-content';
-    if (content) body.appendChild(document.getElementById(content));
-    else while (section.firstChild) body.appendChild(section.firstChild);
-    if (content) document.getElementById('preview-header').remove();
-    section.prepend(header); section.appendChild(body);
-    makeDisclosure(section, header, body, id);
-  }
-  // Icon/abbreviated buttons get their tooltip as accessible name; preset tooltips list
-  // every param, so presets keep their visible name instead.
-  document.querySelectorAll('button').forEach(b => {
-    if (b.dataset.preset) b.setAttribute('aria-label', b.dataset.preset);
-    else if (b.title) b.setAttribute('aria-label', b.title);
-  });
-  document.getElementById('btn-theme').setAttribute('aria-label', 'Toggle interface light/dark theme');
-  document.querySelectorAll('.preset-btn').forEach(b => { if (!b.dataset.preset) b.title = b.textContent; });
-  syncButtonStates();
-  document.addEventListener('click', syncButtonStates);
-  document.addEventListener('keydown', () => queueMicrotask(syncButtonStates));
-  // Reflect class updates made by undo, keyboard edits and live drawing as well.
-  new MutationObserver(syncButtonStates).observe(document.getElementById('params-panel'), {subtree: true, attributes: true, attributeFilter: ['class']});
-}

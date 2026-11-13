@@ -1,3 +1,4 @@
 .claude/*
 !.claude/skills/
 pixel-font-styles*.json
+*.pixelfont.json

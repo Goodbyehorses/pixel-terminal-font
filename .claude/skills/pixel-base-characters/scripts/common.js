@@ -2,7 +2,9 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-// Every character the app has a button for (CHAR_GROUPS in js/app.js), in display order.
+// The core characters a set must draw. The app has buttons for more (CHAR_GROUPS in
+// js/app.js: accented letters, symbols, box drawing, Powerline); a set may draw those
+// too, and any it leaves out keep the app's Classic drawing.
 const REQUIRED_CHARS = [
   ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ',
   ...'abcdefghijklmnopqrstuvwxyz',

@@ -243,6 +243,18 @@ function generateGlyphPath(data, cols, rows, params) {
   const rect = (rx, ry, rw, rh) =>
     `M ${p(rx)} ${p(ry)} H ${p(rx + rw)} V ${p(ry + rh)} H ${p(rx)} Z`;
 
+  // _overlap (font export): bridges reach half a pixel into both neighbours
+  // instead of only touching them. The filled area is identical, but a font
+  // rasteriser that grid-fits each contour on its own can no longer open a
+  // hairline seam between a pixel and its bridge.
+  const lapX = params._overlap ? cellWidth / 2 : 0;
+  const lapY = params._overlap ? cellHeight / 2 : 0;
+  const bridgeE = (bx, by, bh) => rect(bx - lapX, by, gapX + 2 * lapX, bh);
+  const bridgeS = (bx, by, bw) => rect(bx, by - lapY, bw, gapY + 2 * lapY);
+  // Solid pixels that touch with no gap need the same cover over the shared edge.
+  const joinX = gapX > 0 || lapX > 0;
+  const joinY = gapY > 0 || lapY > 0;
+
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) {
       if (!isCell(c, r)) continue;
@@ -272,8 +284,8 @@ function generateGlyphPath(data, cols, rows, params) {
         parts.push(rect(x, y,  cw, barH));
         parts.push(rect(x, y1, cw, barH));
         if (nE && gapX > 0) {
-          parts.push(rect(x + cw, y,  gapX, barH));
-          parts.push(rect(x + cw, y1, gapX, barH));
+          parts.push(bridgeE(x + cw, y,  barH));
+          parts.push(bridgeE(x + cw, y1, barH));
         }
 
       } else if (cellShape === 'vertical') {
@@ -284,8 +296,8 @@ function generateGlyphPath(data, cols, rows, params) {
         parts.push(rect(x,  y, barW, ch));
         parts.push(rect(x1, y, barW, ch));
         if (nS && gapY > 0) {
-          parts.push(rect(x,  y + ch, barW, gapY));
-          parts.push(rect(x1, y + ch, barW, gapY));
+          parts.push(bridgeS(x,  y + ch, barW));
+          parts.push(bridgeS(x1, y + ch, barW));
         }
 
       } else if (cellShape === 'pixel') {
@@ -328,8 +340,8 @@ function generateGlyphPath(data, cols, rows, params) {
         const ax = x + (cw - a) / 2;
         parts.push(rect(x, ay, cw, a));
         parts.push(rect(ax, y, a, ch));
-        if (nE && gapX > 0) parts.push(rect(x + cw, ay, gapX, a));
-        if (nS && gapY > 0) parts.push(rect(ax, y + ch, a, gapY));
+        if (nE && gapX > 0) parts.push(bridgeE(x + cw, ay, a));
+        if (nS && gapY > 0) parts.push(bridgeS(ax, y + ch, a));
 
       } else if (cellShape === 'diagonal') {
         // "/" stripes: bands of X+Y (cell-unit coords) centred on 0, 1, 2 so the
@@ -367,10 +379,15 @@ function generateGlyphPath(data, cols, rows, params) {
       } else if (cellShape === 'tile') {
         // Isolated rounded squares — never bridged or merged.
         parts.push(roundedRectPath(x, y, cw, ch, rad, rad, rad, rad));
+        // Square tiles that touch (no gap) form one bar; the font export covers the seam.
+        if (rad <= 0 && nE && gapX <= 0 && lapX > 0) parts.push(bridgeE(x + cw, y, ch));
+        if (rad <= 0 && nS && gapY <= 0 && lapY > 0) parts.push(bridgeS(x, y + ch, cw));
 
       } else if (cellShape === 'slope') {
-        // Rect cells with 45° chamfered outer corners + filled diagonal bands
-        // between diagonal-only neighbours (smooth "sloped" pixel edges).
+        // Rect cells with chamfered outer corners, joined to diagonal-only
+        // neighbours by a band. The band runs from corner cut to corner cut, not
+        // corner to corner: with the cut at about 0.3 of a pixel a diagonal stroke
+        // is then as heavy as a straight one and ends in the same clipped shape.
         const cTL = (nN || nW) ? 0 : rad;
         const cTR = (nN || nE) ? 0 : rad;
         const cBR = (nS || nE) ? 0 : rad;
@@ -379,20 +396,27 @@ function generateGlyphPath(data, cols, rows, params) {
           [x + cTL, y], [x + cw - cTR, y], [x + cw, y + cTR], [x + cw, y + ch - cBR],
           [x + cw - cBR, y + ch], [x + cBL, y + ch], [x, y + ch - cBL], [x, y + cTL],
         ]));
-        if (nE && gapX > 0) parts.push(rect(x + cw, y, gapX, ch));
-        if (nS && gapY > 0) parts.push(rect(x, y + ch, cw, gapY));
-        if (nE && nS && nSE && gapX > 0 && gapY > 0)
-          parts.push(rect(x + cw, y + ch, gapX, gapY));
-        // SE band: this cell's TR corner → SE cell's TR, SE cell's BL → this cell's BL
+        if (nE && joinX) parts.push(bridgeE(x + cw, y, ch));
+        if (nS && joinY) parts.push(bridgeS(x, y + ch, cw));
+        if (nE && nS && nSE && joinX && joinY)
+          parts.push(rect(x + cw - lapX, y + ch - lapY, gapX + 2 * lapX, gapY + 2 * lapY));
+        // Each long edge of a band follows the cut of this pixel, crosses to the
+        // diagonal neighbour, and follows the same cut there. The cut is used even
+        // where the pixel keeps a square corner (an orthogonal neighbour covers it).
+        // "\" band to the SE pixel: along the top-right cuts, back along the bottom-left ones.
         if (nSE && !nE && !nS) {
+          const bx = x + stepX, by = y + stepY;
           parts.push(polygonSubpath([
-            [x + cw, y], [x + stepX + cw, y + stepY], [x + stepX, y + stepY + ch], [x, y + ch],
+            [x + cw - rad, y], [x + cw, y + rad], [bx + cw - rad, by], [bx + cw, by + rad],
+            [bx + rad, by + ch], [bx, by + ch - rad], [x + rad, y + ch], [x, y + ch - rad],
           ]));
         }
-        // SW band (listed clockwise): TL → BR of this cell, then BR → TL of SW cell
+        // "/" band to the SW pixel: along the bottom-right cuts, back along the top-left ones.
         if (nSW && !nW && !nS) {
+          const bx = x - stepX, by = y + stepY;
           parts.push(polygonSubpath([
-            [x, y], [x + cw, y + ch], [x - stepX + cw, y + stepY + ch], [x - stepX, y + stepY],
+            [x + rad, y], [x + cw, y + ch - rad], [x + cw - rad, y + ch], [bx + cw, by + ch - rad],
+            [bx + cw - rad, by + ch], [bx, by + rad], [bx + rad, by], [x, y + rad],
           ]));
         }
 
@@ -404,17 +428,22 @@ function generateGlyphPath(data, cols, rows, params) {
         const rBL = (cornerMerge && (nS || nW)) ? 0 : rad;
         parts.push(roundedRectPath(x, y, cw, ch, rTL, rTR, rBR, rBL));
 
-        // Gap bridges
-        if (nE && gapX > 0)
+        // Gap bridges. They only overlap the pixels when the join is square
+        // (merged corners, no bridge radius); otherwise the overlap would
+        // fill the notches that make the look.
+        const lap = cornerMerge && br <= 0 && bvr <= 0;
+        if (nE && (gapX > 0 || (lap && joinX)))
           parts.push(br > 0
             ? roundedRectPath(x + cw, y, gapX, ch, br, br, br, br)
-            : rect(x + cw, y, gapX, ch));
-        if (nS && gapY > 0)
+            : lap ? bridgeE(x + cw, y, ch) : rect(x + cw, y, gapX, ch));
+        if (nS && (gapY > 0 || (lap && joinY)))
           parts.push(bvr > 0
             ? roundedRectPath(x, y + ch, cw, gapY, bvr, bvr, bvr, bvr)
-            : rect(x, y + ch, cw, gapY));
-        if (nE && nS && nSE && gapX > 0 && gapY > 0)
-          parts.push(rect(x + cw, y + ch, gapX, gapY));
+            : lap ? bridgeS(x, y + ch, cw) : rect(x, y + ch, cw, gapY));
+        if (nE && nS && nSE && ((gapX > 0 && gapY > 0) || (lap && joinX && joinY)))
+          parts.push(lap
+            ? rect(x + cw - lapX, y + ch - lapY, gapX + 2 * lapX, gapY + 2 * lapY)
+            : rect(x + cw, y + ch, gapX, gapY));
       }
 
       // (inner concave fillets handled separately — see generateInnerFilletPath)
@@ -730,26 +759,16 @@ function generateTextSVG(glyphs, text, params) {
   ].join('\n');
 }
 
-/**
- * Trigger a file download of the given SVG string.
- */
+/** Trigger a file download of the given SVG string. */
 function downloadSVG(filename, svgString) {
-  const blob = new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = filename;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadBlob(filename, new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' }));
 }
 
 /**
- * Rasterize an SVG string to PNG and trigger download.
+ * Rasterize an SVG string to a PNG blob.
  * scale: output pixel multiplier (e.g. 4 = 4× the SVG's natural pixel size).
  */
-function downloadPNG(filename, svgString, scale = 4) {
+function rasterizeSVG(svgString, scale = 4) {
   return new Promise((resolve, reject) => {
     const img = new Image();
     const url = URL.createObjectURL(new Blob([svgString], { type: 'image/svg+xml;charset=utf-8' }));
@@ -761,20 +780,22 @@ function downloadPNG(filename, svgString, scale = 4) {
         canvas.width = Math.round(img.naturalWidth * scale);
         canvas.height = Math.round(img.naturalHeight * scale);
         canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-        canvas.toBlob(blob => {
-          if (!blob) { fail(); return; }
-          const pngURL = URL.createObjectURL(blob);
-          const a = Object.assign(document.createElement('a'), {href: pngURL, download: filename});
-          document.body.appendChild(a);
-          a.click(); a.remove();
-          setTimeout(() => URL.revokeObjectURL(pngURL), 1000);
-          resolve();
-        }, 'image/png');
+        canvas.toBlob(blob => { if (blob) resolve(blob); else fail(); }, 'image/png');
         URL.revokeObjectURL(url);
       } catch { fail(); }
     };
     img.src = url;
   });
+}
+
+/** Trigger a file download of a blob. */
+function downloadBlob(filename, blob) {
+  const url = URL.createObjectURL(blob);
+  const a = Object.assign(document.createElement('a'), { href: url, download: filename });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
 /**
@@ -879,7 +900,7 @@ function generateZIP(entries) {
   };
   for (const entry of entries) {
     const name = encoder.encode(entry.name);
-    const data = encoder.encode(entry.data);
+    const data = entry.data instanceof Uint8Array ? entry.data : encoder.encode(entry.data);
     const crc = crc32(data);
     const local = header(30 + name.length);
     const lv = new DataView(local.buffer);
