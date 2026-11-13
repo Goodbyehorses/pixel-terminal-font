@@ -2,76 +2,159 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="color-scheme" content="dark light">
   <title>Pixel Font Generator</title>
-  <link rel="stylesheet" href="css/style.css?v=5">
+  <script>
+    // Set the theme before first paint: saved choice, else the system preference.
+    (function () {
+      var t = '';
+      try { t = localStorage.getItem('pfg-theme') || ''; } catch (e) {}
+      if (t !== 'light' && t !== 'dark') t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+      document.documentElement.dataset.theme = t;
+    })();
+  </script>
+  <link rel="stylesheet" href="css/style.css?v=6">
 </head>
 <body>
 
-  <!-- Header -->
+  <a class="skip-link" href="#grid-editor">Skip to the pixel editor</a>
+
   <header id="header">
     <h1>Pixel Font Generator</h1>
+    <div class="header-group">
+      <button id="btn-undo" disabled data-tip="Undo · Ctrl+Z" aria-keyshortcuts="Control+Z">Undo</button>
+      <button id="btn-redo" disabled data-tip="Redo · Ctrl+Shift+Z" aria-keyshortcuts="Control+Shift+Z">Redo</button>
+    </div>
+    <span id="autosave-status" role="status">Saved in this browser</span>
     <div class="header-actions">
-      <button id="btn-undo" disabled title="Undo (Ctrl+Z)">↩ Undo</button>
-      <button id="btn-redo" disabled title="Redo (Ctrl+Shift+Z)">↪ Redo</button>
-      <button id="btn-reset">Reset character</button>
-      <button id="btn-reset-all">Reset project</button>
-      <button id="btn-export" class="primary">SVG (this char)</button>
-      <button id="btn-export-all" class="primary">All SVGs (.zip)</button>
-      <button id="btn-export-png" class="primary">PNG (this char)</button>
-      <label class="header-label" title="PNG pixel scale multiplier">PNG scale <input id="png-scale" type="number" min="1" max="16" value="4" style="width:36px;padding:2px 4px;"></label>
-      <button id="btn-export-sprite" class="primary">Sprite sheet</button>
-      <button id="btn-theme" title="Toggle light/dark mode">☾</button>
+      <button id="btn-project" popovertarget="menu-project">Project</button>
+      <button id="btn-export-menu" class="primary" popovertarget="menu-export">Export</button>
+      <button id="btn-help" class="icon-btn" popovertarget="menu-help" aria-label="Help and keyboard shortcuts"></button>
+      <button id="btn-theme" class="icon-btn"></button>
     </div>
   </header>
 
-  <!-- Main 3-column area -->
   <main id="main">
 
-    <!-- Left: character selector -->
-    <nav id="char-list-panel" aria-label="Character selector">
-      <div id="char-list"></div>
+    <nav id="char-map-panel" aria-label="Characters">
+      <h2 class="visually-hidden">Characters</h2>
+      <div id="char-map"></div>
     </nav>
 
-    <!-- Center: grid editor + preview -->
-    <section id="editor-section">
+    <div id="workspace">
+      <section id="editor-section" aria-label="Editor">
+        <div id="editor-col">
+          <div id="char-heading">
+            <button id="btn-prev-char" class="icon-btn" aria-label="Previous character" data-tip="Previous character · [" aria-keyshortcuts="["></button>
+            <h2 id="char-title"><span id="char-name">A</span><span id="char-meta"></span></h2>
+            <button id="btn-next-char" class="icon-btn" aria-label="Next character" data-tip="Next character · ]" aria-keyshortcuts="]"></button>
+          </div>
+          <div id="editor-toolbar" class="editor-toolbar" role="toolbar" aria-label="Drawing tools"></div>
+          <div id="grid-wrap"><div id="grid-editor" tabindex="0"></div></div>
+          <p id="editor-instructions" class="visually-hidden">Arrow keys move between pixels. Space toggles a pixel. Home and End move to the row edges.</p>
+          <p class="control-hint">Click or drag to draw. Start on a lit pixel to erase.</p>
+        </div>
 
-      <!-- Left col: interactive grid -->
-      <div id="editor-col">
-        <div id="editor-label">Edit</div>
-        <div id="grid-editor"></div>
-        <p id="editor-instructions" class="visually-hidden">Arrows move between cells. Space toggles a pixel. Home and End move to row edges.</p>
-        <p class="control-hint">Click or drag to draw · drag on a lit pixel to erase · arrows + Space with keyboard</p>
-        <small id="autosave-status" role="status">Saved on this device</small>
-      </div>
+        <div id="preview-col">
+          <h2 class="pane-label">Preview</h2>
+          <div id="editor-preview"></div>
+        </div>
+      </section>
 
-      <!-- Right col: SVG preview -->
-      <div id="preview-col">
-        <div id="preview-label">Preview</div>
-        <div id="editor-preview"></div>
-      </div>
+      <section id="type-tester" aria-label="Type tester"></section>
+    </div>
 
-    </section>
-
-    <!-- Right: parameters -->
-    <aside id="params-panel"></aside>
+    <aside id="params-panel" aria-label="Settings"></aside>
 
   </main>
 
-  <!-- Type tester -->
-  <section id="type-tester"></section>
+  <div id="menu-project" class="menu" popover aria-label="Project">
+    <p class="menu-note">Your work is saved in this browser. A project file keeps it safe elsewhere.</p>
+    <button id="btn-save-project" class="menu-item">Save project file<kbd>Ctrl+S</kbd></button>
+    <button id="btn-open-project" class="menu-item">Open project file…</button>
+    <input id="project-file" type="file" accept=".json,application/json" hidden aria-label="Project file">
+    <hr>
+    <button id="btn-reset-all" class="menu-item danger">Reset project</button>
+    <p class="menu-note">Reset returns every drawing and setting to the defaults. You can undo it.</p>
+  </div>
 
-  <!-- Bottom: full font preview strip -->
-  <footer id="preview-panel">
-    <div id="preview-header">
-      <span>Font Preview</span>
-    </div>
-    <div id="preview-strip"></div>
-  </footer>
+  <div id="menu-export" class="menu" popover aria-label="Export">
+    <section class="menu-section">
+      <h2>Font</h2>
+      <div class="menu-field">
+        <label for="font-name">Font name</label>
+        <input id="font-name" type="text" maxlength="60" autocomplete="off" spellcheck="false">
+      </div>
+      <button id="exp-font" class="menu-item primary">Font file (.ttf)</button>
+      <p class="menu-note">Installable and monospaced. Keeps the pixel shape, corners, slant and spacing. Outline and unlit pixels stay in SVG and PNG only.</p>
+    </section>
+    <section class="menu-section">
+      <h2>This character</h2>
+      <div class="menu-row">
+        <button id="exp-svg" class="menu-item">SVG</button>
+        <button id="exp-png" class="menu-item">PNG</button>
+      </div>
+    </section>
+    <section class="menu-section">
+      <h2>All characters</h2>
+      <div class="menu-row">
+        <button id="exp-zip" class="menu-item">SVGs (.zip)</button>
+        <button id="exp-pngzip" class="menu-item">PNGs (.zip)</button>
+      </div>
+      <button id="exp-sprite" class="menu-item">Sprite sheet (SVG)</button>
+    </section>
+    <section class="menu-section">
+      <h2>Type tester text</h2>
+      <button id="exp-text" class="menu-item">Text line (SVG)</button>
+    </section>
+    <section class="menu-section menu-options">
+      <h2>Options</h2>
+      <div class="menu-field inline">
+        <label for="png-scale">PNG scale</label>
+        <input id="png-scale" class="param-num" type="number" min="1" max="16" value="4">
+      </div>
+      <div class="menu-field inline">
+        <label for="param-padding">Padding around artwork</label>
+        <input id="param-padding" class="param-num" type="number" min="0" max="40" step="1">
+      </div>
+    </section>
+  </div>
+
+  <div id="menu-help" class="menu menu-wide" popover aria-label="Help and keyboard shortcuts">
+    <section class="menu-section">
+      <h2>How it works</h2>
+      <ol class="help-steps">
+        <li>Pick a character in the map, or type it.</li>
+        <li>Draw it in the pixel grid.</li>
+        <li>Choose a look, then adjust it in the settings.</li>
+        <li>Export a font file, or SVG and PNG artwork.</li>
+      </ol>
+    </section>
+    <section class="menu-section">
+      <h2>Keyboard shortcuts</h2>
+      <dl class="shortcuts">
+        <div><dt><kbd>[</kbd> <kbd>]</kbd></dt><dd>Previous and next character</dd></div>
+        <div><dt><kbd>A</kbd> <kbd>b</kbd> <kbd>7</kbd> …</dt><dd>Jump to that character</dd></div>
+        <div><dt><kbd>Arrows</kbd> <kbd>Space</kbd></dt><dd>Move in the grid and toggle a pixel</dd></div>
+        <div><dt><kbd>Shift</kbd>+<kbd>Arrows</kbd></dt><dd>Shift the drawing by one pixel</dd></div>
+        <div><dt><kbd>Alt</kbd>+<kbd>H</kbd> / <kbd>V</kbd></dt><dd>Flip horizontally or vertically</dd></div>
+        <div><dt><kbd>Alt</kbd>+<kbd>R</kbd></dt><dd>Rotate 90°</dd></div>
+        <div><dt><kbd>Alt</kbd>+<kbd>I</kbd></dt><dd>Invert the drawing</dd></div>
+        <div><dt><kbd>Alt</kbd>+<kbd>X</kbd></dt><dd>Clear the drawing</dd></div>
+        <div><dt><kbd>Ctrl</kbd>+<kbd>C</kbd> / <kbd>V</kbd></dt><dd>Copy and paste a drawing</dd></div>
+        <div><dt><kbd>Ctrl</kbd>+<kbd>Z</kbd></dt><dd>Undo. Add <kbd>Shift</kbd> to redo.</dd></div>
+        <div><dt><kbd>Ctrl</kbd>+<kbd>S</kbd></dt><dd>Save a project file</dd></div>
+      </dl>
+      <p class="menu-note">Shift-click a flip, shift, rotate or invert tool to apply it to every character.</p>
+    </section>
+  </div>
 
   <div id="toast-container" class="toast-container" role="status" aria-live="polite" aria-atomic="false"></div>
-  <script src="js/font-data.js?v=20"></script>
-  <script src="js/renderer.js?v=29"></script>
-  <script src="js/app.js?v=31"></script>
+
+  <script src="js/font-data.js?v=21"></script>
+  <script src="js/renderer.js?v=30"></script>
+  <script src="js/font-export.js?v=1"></script>
+  <script src="js/app.js?v=32"></script>
 </body>
 </html>

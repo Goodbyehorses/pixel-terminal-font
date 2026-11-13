@@ -1,4 +1,4 @@
-// Load the browser classic scripts (js/font-data.js, js/renderer.js) into a
+// Load the browser classic scripts (font data, renderer, font export) into a
 // node:vm context and return their top-level declarations as an object.
 // Top-level const/let/function declarations of a classic script are not
 // properties of the global object, so they are collected by evaluating a
@@ -10,11 +10,12 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const ROOT = path.join(__dirname, '..', '..');
-const FILES = ['js/font-data.js', 'js/renderer.js'];
+const FILES = ['js/font-data.js', 'js/renderer.js', 'js/font-export.js'];
 const EXPORTS = [
   'FONT_COLS', 'FONT_ROWS', 'FONT_DATA', 'FONT_MAPS', 'CHAR_STYLES', 'bestFontSource',
   'generateGlyphPath', 'generateGlyphSVG', 'glyphDimensions',
   'skewExtraWidth', 'resolveGaps',
+  'generateTTF', 'detectMetrics', 'pathToContours', 'glyphContours',
 ];
 
 function load() {

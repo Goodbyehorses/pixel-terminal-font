@@ -8,12 +8,12 @@ description: "Create and revise complete bitmap Base Characters sets for the Pix
 You are designing a typeface on a pixel grid for someone who will judge it by eye. What they want is a set that **feels like the thing they described**, has real character, and still reads. A valid file is only the starting point.
 
 The Pixel Font Generator has two layers:
-- **Base Characters**: the bitmaps, meaning which pixels are on for each character on a `cols × rows` grid. This is the font's anatomy.
+- **Base Characters** (the **Letterforms** section in the app): the bitmaps, meaning which pixels are on for each character on a `cols × rows` grid. This is the font's anatomy.
 - **Looks**: how lit pixels are drawn: cell shape (rect, circle, horizontal scanlines, rings…), gaps, rounding, colours, unlit pixels.
 
 You design the anatomy. You also suggest one to three looks that put the set in its world, such as green phosphor scanlines for a terminal, amber LED dots for a station sign, or chunky rounded tiles for a kids' game. People decide whether they like a font from how it appears in context, so a set without a look undersells itself.
 
-The generator is the sandbox. The deliverable is a style file the user loads with **Styles → Import → Load**. No app code changes.
+The generator is the sandbox. The deliverable is a style file the user loads with **Saved styles → Import → Load**. No app code changes.
 
 ## Deliverables
 
@@ -71,7 +71,7 @@ Then do the figures, then punctuation and symbols. Most weak sets come from glyp
 }
 ```
 
-- `glyphs`: all 95 characters the app has buttons for. `scripts/common.js` lists them, and the builder reports any that are missing. Escape `"` and `\` as JSON requires: `"\""` and `"\\"`.
+- `glyphs`: the 95 core characters. `scripts/common.js` lists them, and the builder reports any that are missing. The app also has accented letters, symbols, box drawing and Powerline characters; drawing them is optional, and the ones left out keep the app's Classic drawing. Escape `"` and `\` as JSON requires: `"\""` and `"\\"`.
 - `params`: leave this empty or keep it minimal. It's the set's own entry, which users load when they want to keep their current look.
 - `looks`: 1–3 named looks that fit the brief. They can use any app param:
   - `cellShape`: `rect circle nodes horizontal vertical pixel diamond ring plus hexagon diagonal halftone slope tile open dash`

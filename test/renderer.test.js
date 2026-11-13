@@ -105,3 +105,39 @@ test('glyphDimensions adds skew extra width (sign-independent)', () => {
   }
   assert.equal(g.skewExtraWidth(0, contentH), 0);
 });
+
+test('slope bands run between the corner cuts, so diagonals match straight strokes', () => {
+  const subpaths = (data, extra) => {
+    const d = g.generateGlyphPath(data, 2, 2, baseParams({ cellShape: 'slope', gapX: 0, gapY: 0, ...extra }));
+    return d.split('Z').map((sub) => sub.trim()).filter(Boolean)
+      .map((sub) => sub.replace(/[ML] /g, '|').split('|').filter(Boolean).map((pt) => pt.trim()));
+  };
+
+  // "\\" pair: pixel, band, pixel. Every band point sits on a corner cut of one of the
+  // two pixels, so no part of the band pokes out past a cut.
+  const [first, band, second] = subpaths([1, 0, 0, 1]);
+  assert.equal(band.join(', '), '16 0, 20 4, 36 20, 40 24, 24 40, 20 36, 4 20, 0 16');
+  for (const pt of band.slice(0, 2).concat(band.slice(6))) assert.ok(first.includes(pt), `${pt} is not on the first pixel`);
+  for (const pt of band.slice(2, 6)) assert.ok(second.includes(pt), `${pt} is not on the second pixel`);
+
+  // "/" pair mirrors it.
+  const [, upBand] = subpaths([0, 1, 1, 0]);
+  assert.equal(upBand.join(', '), '24 0, 40 16, 36 20, 20 36, 16 40, 0 24, 4 20, 20 4');
+
+  // With the cut at 1 - 1/sqrt(2) of the pixel, the band is exactly one pixel thick.
+  const size = 20, cut = size * (1 - Math.SQRT1_2);
+  const [, even] = subpaths([1, 0, 0, 1], { cornerRadius: cut });
+  const [ax, ay] = even[0].split(' ').map(Number);   // on the upper long edge
+  const [bx, by] = even[7].split(' ').map(Number);   // on the lower long edge
+  const thickness = Math.abs((ax - ay) - (bx - by)) / Math.SQRT2;
+  assert.ok(Math.abs(thickness - size) < 0.02, `band is ${thickness} thick, pixel is ${size}`);
+});
+
+test('font export covers the shared edge of touching pixels when the gap is zero', () => {
+  for (const cellShape of ['rect', 'slope']) {
+    const params = baseParams({ cellShape, gapX: 0, gapY: 0 });
+    const count = (extra) => g.generateGlyphPath([1, 1], 2, 1, { ...params, ...extra }).split('Z').filter((s) => s.trim()).length;
+    assert.equal(count({}), 2, `${cellShape}: artwork is just the two pixels`);
+    assert.equal(count({ _overlap: true }), 3, `${cellShape}: export adds a cover over the seam`);
+  }
+});
